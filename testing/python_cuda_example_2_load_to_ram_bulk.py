@@ -131,8 +131,8 @@ def main():
     PY = False
     GPU = True
     DEBUG_ALL = False
-    EVAL_UNTIL = -1
-    RESIZE = 20
+    EVAL_UNTIL = 1
+    RESIZE = 100
     MAX_THREADS = 1024
 
     radius = 1
@@ -168,6 +168,7 @@ def main():
             with rawpy.imread(str(path.joinpath(f))) as raw:
                 rgb = raw.postprocess(use_camera_wb=True)
                 bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                print(bgr.flatten(order="K")[:5], bgr.flatten(order="K")[-5:])
 
         if RESIZE != 100:
             scale_percent = RESIZE  # percent of original size
@@ -213,17 +214,22 @@ def main():
             total_pixels = width*height
 
             grid_width = find_nearest_pow_2(total_pixels/MAX_THREADS)
+            
             compareAndPushSharpnesses(
                 drv.InOut(composite_image_gpu), drv.InOut(sharpnesses_gpu), drv.In(bgr.flatten(order="K")),
                 drv.In(np.array([width])), drv.In(np.array([height])), drv.In(np.array([radius])),
                 block=(MAX_THREADS, 1, 1), grid=(grid_width, 1))
             
-            
-            cv2.imshow('image gpu', cv2.rotate(composite_image_gpu.reshape(height, width, 3), cv2.ROTATE_90_CLOCKWISE))
+            print(composite_image_gpu.shape)
+            scale_percent_prog = 30  # percent of original size
+            width_prog = int(bgr.shape[1] * scale_percent_prog / 100)
+            height_prog = int(bgr.shape[0] * scale_percent_prog / 100)
+            cv2.imshow("image gpu", cv2.resize(cv2.rotate(composite_image_gpu.reshape(height, width, 3), cv2.ROTATE_90_CLOCKWISE), (height_prog, width_prog)))
+            cv2.moveWindow("image gpu", 100, 100)
             if i == 0:
                 cv2.waitKey(0)
             else:
-                cv2.waitKey(50)
+                cv2.waitKey(200)
             
         print("Time to eval:", time.time() - start)
 
