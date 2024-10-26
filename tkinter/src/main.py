@@ -101,6 +101,7 @@ def render(radius, image_arr_dict, message_queue):
     
     ## rewrite this to use pyopencl
     best_device = find_fastest_opencl_device()
+    print(f"Using best device {best_device.name}")
     ctx = cl.Context([best_device])
     max_work_group_size = best_device.max_work_group_size
     queue = cl.CommandQueue(ctx)
