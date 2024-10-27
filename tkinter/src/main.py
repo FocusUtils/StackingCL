@@ -51,6 +51,7 @@ def load_image(name):
             rgb = raw.postprocess(use_camera_wb=True, no_auto_bright=False)
 
     if rgb.shape[0] > rgb.shape[1]:
+        
         rgb = cv2.rotate(rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
@@ -70,42 +71,16 @@ def find_nearest_pow_2(val):
         if val < 2**i:
             return 2**i    
 
-def find_fastest_opencl_device():
+def get_opencl_devices():
     platforms = cl.get_platforms()  # Get all platforms
-    best_device = None
-    best_score = 0  # We will calculate a "score" to evaluate devices
+    return [device for platform in platforms for device in platform.get_devices()]
     
-    # Iterate over all platforms and their devices
-    for platform in platforms:
-        for device in platform.get_devices():
-            # Get device properties
-            compute_units = device.max_compute_units
-            clock_frequency = device.max_clock_frequency
-            global_mem_size = device.global_mem_size
-            local_mem_size = device.local_mem_size
-            
-            # Compute a score (this is a heuristic, you can adjust this based on your needs)
-            # We prioritize more compute units, higher clock frequency, and larger memory
-            score = (compute_units * clock_frequency) + (global_mem_size // (1024 * 1024)) + (local_mem_size // 1024)
-            
-            # Keep track of the best device based on this score
-            if score > best_score:
-                best_score = score
-                best_device = device
-    
-    return best_device
 
-
-
-def render(radius, image_arr_dict, message_queue):
-    
-    ## rewrite this to use pyopencl
-    best_device = find_fastest_opencl_device()
-    print(f"Using best device {best_device.name}")
-    ctx = cl.Context([best_device])
-    max_work_group_size = best_device.max_work_group_size
+def initialize_gpu_and_compile(device: cl.Device):
+    ctx = cl.Context([device])
+    max_work_group_size = device.max_work_group_size
     queue = cl.CommandQueue(ctx)
-    
+
 
     source = """
     int get_pos(int x, int y, int width, int color) {
@@ -148,6 +123,7 @@ def render(radius, image_arr_dict, message_queue):
                 calculated_pixels++;
             }
         }
+        
         double sharpness = (double)(delta) / (double)(calculated_pixels * 3 * 255);
         
         if (sharpness > sharpnesses[thrd_i]) {
@@ -160,6 +136,8 @@ def render(radius, image_arr_dict, message_queue):
 
     program = cl.Program(ctx, source).build()
 
+
+def render(radius, image_arr_dict, ctx, program, queue, message_queue):
     img1 = list(image_arr_dict.values())[0]
     
     width = int(img1.shape[1])
@@ -493,9 +471,29 @@ if __name__ == '__main__':
 
     rendering_frame = customtkinter.CTkFrame(root)
     rendering_frame.grid(row=1, column=0, sticky="nesw")
+    rendering_frame.columnconfigure(0, weight=1)
+    rendering_frame.columnconfigure(1, weight=0)
+    rendering_frame.columnconfigure(2, weight=1)
 
-    render_button = customtkinter.CTkButton(rendering_frame, text="Render opened images", command=lambda: Thread(target=launch_render).start())
-    render_button.pack(pady=(12, 5))
+    render_button = customtkinter.CTkButton(rendering_frame, text="Render opened images",
+                                            command=lambda: Thread(target=launch_render, ).start())
+    render_button.grid(row=0, column=0, pady=(12, 5), padx = (0, 12), sticky="ne")
+    
+    
+    gpu_selection_label = customtkinter.CTkLabel(rendering_frame, text="Select a GPU:",
+                                                 fg_color=render_button._fg_color,
+                                                 corner_radius=render_button._corner_radius)
+    gpu_selection_label.grid(row=0, column=1, pady=(12, 5), padx=(1, 1), sticky="n")
+    
+    ## create a dropdown for selecting a gpu
+    
+    cl_devices = get_opencl_devices()
+    options = [f"{device.name} ({device.vendor})" for device in cl_devices]
+    if len(options) == 0:
+        messagebox.showerror("No OpenCL devices found", "Error: No OpenCL devices were found on your system. Please make sure you have OpenCL installed for the GPU you intend to use and your drivers are up to date.")
+    gpu_selection_dropdown = customtkinter.CTkComboBox(rendering_frame, values=options)
+    gpu_selection_dropdown.set(options[0])  # Set the default value
+    gpu_selection_dropdown.grid(row=0, column=2, pady=(12, 5), padx=(0, 0), sticky="nw")
 
 
     ## settings
