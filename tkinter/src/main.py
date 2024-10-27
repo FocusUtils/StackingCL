@@ -1,7 +1,6 @@
 import tkinter as tk
 import customtkinter
 from scrollable_frame import VerticalScrolledFrame
-from growing_image import GrowingImage
 from preview_image import PreviewImage
 from PIL import ImageTk, Image
 import rawpy
@@ -19,13 +18,13 @@ import multiprocess as mp
 import subprocess
 import sys
 import statistics
-from rawloader import load_raw_image
 import pyopencl as cl
+from sbNative.runtimetools import get_path
 
+os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
 
 MAX_CORES_FOR_MP = mp.cpu_count()-1
-
 
 FILE_EXTENTIONS = {
     "RAW": [
@@ -73,7 +72,7 @@ def find_nearest_pow_2(val):
 
 def get_opencl_devices():
     platforms = cl.get_platforms()  # Get all platforms
-    return [device for platform in platforms for device in platform.get_devices()]
+    return {device.name: device for platform in platforms for device in platform.get_devices()}
     
 
 def initialize_gpu_and_compile(device: cl.Device):
@@ -82,62 +81,15 @@ def initialize_gpu_and_compile(device: cl.Device):
     queue = cl.CommandQueue(ctx)
 
 
-    source = """
-    int get_pos(int x, int y, int width, int color) {
-        return (y * width + x) * 3 + color;
-    }
-
-    kernel void compareAndPushSharpnesses(__global char *destination, __global double *sharpnesses, __global char *source,
-                                          int width, int height, int radius) {
-        const int thrd_i = get_global_id(0);
-        
-        if (thrd_i > width*height) {
-            return;
-        }
-        
-        int center_x = thrd_i / height;
-        int center_y = thrd_i % height;
-
-        char center_b = source[get_pos(center_x, center_y, width, 0)];
-        char center_g = source[get_pos(center_x, center_y, width, 1)];
-        char center_r = source[get_pos(center_x, center_y, width, 2)];
-
-        long delta = 0;
-
-        int calculated_pixels = 0;
-
-        
-        for (int x = center_x-radius; x < center_x+radius+1; x++) {
-            for (int y = center_y-radius; y < center_y+radius+1; y++) {
-                if (x < 0 || y < 0 || x > width || y > height) {
-                    continue;
-                }
-                
-                if (x == center_x && y == center_y) {
-                    continue;
-                }
-                
-                float d = (float)(abs(abs(center_b) - abs(source[get_pos(x, y, width, 0)])) + abs(abs(center_g) - abs(source[get_pos(x, y, width, 1)])) + abs(abs(center_r) - abs(source[get_pos(x, y, width, 2)])));
-                
-                delta += (int)d;
-                calculated_pixels++;
-            }
-        }
-        
-        double sharpness = (double)(delta) / (double)(calculated_pixels * 3 * 255);
-        
-        if (sharpness > sharpnesses[thrd_i]) {
-            sharpnesses[thrd_i] = sharpness;
-            destination[get_pos(center_x, center_y, width, 0)] = center_b;
-            destination[get_pos(center_x, center_y, width, 1)] = center_g;
-            destination[get_pos(center_x, center_y, width, 2)] = center_r;
-        }
-    }"""
+    with open(get_path() / "compareAndPushSharpnesses.cl", "r") as rf:
+        source = rf.read()
 
     program = cl.Program(ctx, source).build()
+    
+    return ctx, max_work_group_size, program, queue
 
 
-def render(radius, image_arr_dict, ctx, program, queue, message_queue):
+def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, message_queue):
     img1 = list(image_arr_dict.values())[0]
     
     width = int(img1.shape[1])
@@ -375,7 +327,8 @@ if __name__ == '__main__':
         if len(image_arr_dict) < 2:
             messagebox.showerror("Render exception", "Exception: You have not opened 2 or more images to the render queue.")
             return
-
+        device = [device for device in list(get_opencl_devices().values()) if device.name in gpu_selection_dropdown.get()][0]
+        ctx, max_work_group_size, program, queue = initialize_gpu_and_compile(device)
         global changes_panel
         global output_panel
         global sharpness_panel
@@ -410,7 +363,7 @@ if __name__ == '__main__':
         Thread(target=update_progress_bar_worker, args=(message_queue,)).start()
 
         render_time_start = time.time_ns()
-        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, message_queue)
+        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, message_queue)
         
         
         rendering_time = (time.time_ns() - render_time_start) / (10 ** 9)
@@ -418,17 +371,21 @@ if __name__ == '__main__':
         unpack_img_panel()
         unpack_changes_panel()
         unpack_sharpness_panel()
+        
+        rendered_images_frame = customtkinter.CTkFrame(rendering_frame, fg_color="gray13")
+        rendered_images_frame.grid(row=1, column=0, columnspan=3, sticky="nesw")
+        
 
         changes_img = convert_gray_arr_to_image(changes_arr * int(255 / len(image_arr_dict)), width, height)
-        changes_panel = PreviewImage(rendering_frame, image = changes_img)
+        changes_panel = PreviewImage(rendered_images_frame, image = changes_img)
         on_show_changes_checkbox()
 
         output_img = convert_color_arr_to_image(composite_image_gpu, width, height)
-        output_panel = PreviewImage(rendering_frame, image = output_img)
+        output_panel = PreviewImage(rendered_images_frame, image = output_img)
         on_show_output_checkbox()
 
         sharpness_img = convert_gray_arr_to_image(cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U), width, height)
-        sharpness_panel = PreviewImage(rendering_frame, image = sharpness_img)
+        sharpness_panel = PreviewImage(rendered_images_frame, image = sharpness_img)
         on_show_sharpness_checkbox()
 
 
@@ -474,9 +431,11 @@ if __name__ == '__main__':
     rendering_frame.columnconfigure(0, weight=1)
     rendering_frame.columnconfigure(1, weight=0)
     rendering_frame.columnconfigure(2, weight=1)
+    rendering_frame.rowconfigure(0, weight=0)
+    rendering_frame.rowconfigure(1, weight=1)
 
     render_button = customtkinter.CTkButton(rendering_frame, text="Render opened images",
-                                            command=lambda: Thread(target=launch_render, ).start())
+                                            command=lambda: Thread(target=launch_render).start())
     render_button.grid(row=0, column=0, pady=(12, 5), padx = (0, 12), sticky="ne")
     
     
@@ -488,7 +447,8 @@ if __name__ == '__main__':
     ## create a dropdown for selecting a gpu
     
     cl_devices = get_opencl_devices()
-    options = [f"{device.name} ({device.vendor})" for device in cl_devices]
+    
+    options = [f"{name} ({device.vendor})" for name, device in cl_devices.items()]
     if len(options) == 0:
         messagebox.showerror("No OpenCL devices found", "Error: No OpenCL devices were found on your system. Please make sure you have OpenCL installed for the GPU you intend to use and your drivers are up to date.")
     gpu_selection_dropdown = customtkinter.CTkComboBox(rendering_frame, values=options)
@@ -628,7 +588,7 @@ if __name__ == '__main__':
             meta_data_lst.append(f"Loading images took           {loading_time:.5f} seconds\n")
             meta_data_lst.append(f"Rendering images took         {rendering_time:.5f} seconds\n")
 
-            meta_data_lst.append(f"Statistics took               {statistics_delta_time:.5f} seconds to compute\n")
+            meta_data_lst.append(f"Computing statistics took     {statistics_delta_time:.5f} seconds\n")
 
             meta_data_file_name = ".".join(file_name.split(".")[:-1] + ["metadata.txt"])
 
