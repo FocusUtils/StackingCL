@@ -3,7 +3,7 @@ import customtkinter
 from scrollable_frame import VerticalScrolledFrame
 from preview_image import PreviewImage
 from PIL import ImageTk, Image
-import rawpy
+import rawpy    
 from tkinter import filedialog, messagebox, RIGHT, LEFT
 import time
 import gc
@@ -20,6 +20,7 @@ import sys
 import statistics
 import pyopencl as cl
 from sbNative.runtimetools import get_path
+
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
@@ -136,7 +137,7 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
 
     return width, height, changes_arr, composite_image_gpu, sharpnesses_gpu
 
-
+print(__name__)
 if __name__ == '__main__':
     if sys.platform.startswith("win32"):
         mp.freeze_support()
@@ -377,15 +378,15 @@ if __name__ == '__main__':
         
 
         changes_img = convert_gray_arr_to_image(changes_arr * int(255 / len(image_arr_dict)), width, height)
-        changes_panel = PreviewImage(rendered_images_frame, image = changes_img)
+        changes_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = changes_img)
         on_show_changes_checkbox()
 
         output_img = convert_color_arr_to_image(composite_image_gpu, width, height)
-        output_panel = PreviewImage(rendered_images_frame, image = output_img)
+        output_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = output_img)
         on_show_output_checkbox()
 
         sharpness_img = convert_gray_arr_to_image(cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U), width, height)
-        sharpness_panel = PreviewImage(rendered_images_frame, image = sharpness_img)
+        sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
         on_show_sharpness_checkbox()
 
 
@@ -497,6 +498,12 @@ if __name__ == '__main__':
                                                     onvalue=1, offvalue=0, command=on_show_sharpness_checkbox)
     show_sharpness_checkbox.grid(pady=5, row=4, column=0, sticky="nw")
 
+    image_position_info_strvar = customtkinter.StringVar(value="No image loaded")
+    image_position_info = customtkinter.CTkLabel(settings_frame, textvariable=image_position_info_strvar)
+    image_position_info.grid(pady=5, row=6, column=0, sticky="nw")
+    
+    def update_img_pos_info_strvar(x, y):
+        image_position_info_strvar.set(f"Mouse Position: ({x}, {y})")
 
     global radius_string_var
     def on_radius_slider(event):

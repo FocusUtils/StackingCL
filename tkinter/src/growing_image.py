@@ -8,7 +8,7 @@ CTk.set_appearance_mode("System")
 CTk.set_default_color_theme("dark-blue")
 
 class GrowingImage(CTk.CTkCanvas):
-    def __init__(self, parent, *args, zoom=False, image=None, **kw):
+    def __init__(self, parent, mouse_position_callback, *args, zoom=False, image=None, **kw):
         CTk.CTkCanvas.__init__(self, parent, *args, bg="gray13", bd=0, highlightthickness=0, relief='ridge', **kw)
         self.parent = parent
         self.bind('<Configure>', self._config_size)
@@ -22,6 +22,7 @@ class GrowingImage(CTk.CTkCanvas):
         self.mouse_src_img_y = -1
         self.mouse_x = -1
         self.mouse_y = -1
+        self.mouse_position_callback = mouse_position_callback
 
         self.src_aspect_ratio = self.src_img.shape[0] / self.src_img.shape[1]
         self.bind("<Enter>", self._set_mouseover_true)
@@ -57,8 +58,13 @@ class GrowingImage(CTk.CTkCanvas):
         self.mouse_x = box_x - x_offset
         self.mouse_y = box_y - y_offset
         
-        self.mouse_src_img_x = int((self.mouse_x / self.new_image_width) * self.src_img.shape[0])
-        self.mouse_src_img_y = int((self.mouse_y / self.new_image_height) * self.src_img.shape[1])
+        img_mouse_x_portion = self.mouse_x / self.new_image_width
+        img_mouse_y_portion = self.mouse_y / self.new_image_height
+        
+        self.mouse_src_img_x = int(self.src_img.shape[1] * img_mouse_x_portion * self.zoom_amount + self.zoom_x_offset)
+        self.mouse_src_img_y = int(self.src_img.shape[0] * img_mouse_y_portion * self.zoom_amount + self.zoom_y_offset)
+        
+        self.mouse_position_callback(self.mouse_src_img_x, self.mouse_src_img_y)
 
 
     def _set_mouseover_true(self, event):
@@ -122,6 +128,8 @@ class GrowingImage(CTk.CTkCanvas):
                                               self.src_img.shape[0] * self.zoom_amount + self.zoom_y_offset))
         
         self.image = ImageTk.PhotoImage(self.img_cropped.resize((self.new_image_width, self.new_image_height)))
+        
+        
         
         self.create_image(
             self.box_width // 2,
