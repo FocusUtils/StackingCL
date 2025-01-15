@@ -52,3 +52,5 @@ kernel void compareAndPushSharpnesses(__global char *destination,
         destination[get_pos(center_x, center_y, width, 2)] = center_r;
     }
 }
+
+                               
