@@ -82,7 +82,7 @@ def initialize_gpu_and_compile(device: cl.Device):
     queue = cl.CommandQueue(ctx)
 
 
-    with open(get_path() / "compareAndPushSharpnesses.cl", "r") as rf:
+    with open(get_path() / "getFlakeySharpnesses.cl", "r") as rf:
         source = rf.read()
 
     program = cl.Program(ctx, source).build()
@@ -113,12 +113,13 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
         try:
 
-            grid_width = find_nearest_pow_2(total_pixels)
+            # grid_width = find_nearest_pow_2(total_pixels)
+            grid_width = max_work_group_size
             # Execute the kernel
-            program.compareAndPushSharpnesses.set_scalar_arg_dtypes([None, None, None, np.int32, np.int32, np.int32])
-            program.compareAndPushSharpnesses(
-                queue, (grid_width,), (max_work_group_size,),
-                destination_buf, sharpnesses_buf, source_buf, np.int32(width), np.int32(height), np.int32(radius)
+            program.getFlakeySharpnesses.set_scalar_arg_dtypes([None, None, np.int32, np.int32, np.int32, np.float32])
+            program.getFlakeySharpnesses(
+                queue, (100,), (100,),
+                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), np.int32(radius), np.float32(187)
             )
 
             # Wait for the operation to complete
