@@ -42,6 +42,36 @@ FILE_EXTENTIONS = {
     ],
 }
 
+def place_circles_on_rect(width, height, r):
+    circles = []
+    # Distance between circle centers
+
+    # Place circles in the interior
+    for y in range(int(r - 0.3 * r), int(height + 0.3 * r), r):
+        for x in range(int(r - 0.3 * r), int(width + 0.3 * r), r):
+            circles.append((x, y))
+
+    return circles
+
+
+def get_points_of_circles(circles, radius):
+    all_points = []
+    
+    circle_template = []
+    for x in range(-radius, radius + 1):
+        for y in range(-radius, radius + 1):
+            if x**2 + y**2 <= radius**2:
+                circle_template.append((x, y))
+    
+    circle_template = np.array(circle_template)
+    for circle in circles:
+        tmp = circle_template.copy()
+        tmp[:, 0] += circle[0]
+        tmp[:, 1] += circle[1]
+        all_points.append(tmp)
+    return all_points
+
+
 def load_image(name):
     if any(name.lower().endswith(ending) for ending in FILE_EXTENTIONS["CV2"]):
         rgb = cv2.cvtColor(cv2.imread(name), cv2.COLOR_BGR2RGB)
@@ -106,6 +136,14 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
     destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
     sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpnesses_gpu)
     
+    print("Calculating circle points...")
+    start_time_tmp = time.time_ns()
+    circle_points = get_points_of_circles(place_circles_on_rect(width, height, radius), radius)
+    print(f"Time to calculate circle points: {(time.time_ns() - start_time_tmp) / (10 ** 9)}s ({len(circle_points)} circles)")
+    
+    circles_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=np.array(circle_points).flatten(order="K"))
+    points_in_each_circle = circle_points[0].shape[0] 
+    
     for i, (name, rgb) in enumerate(image_arr_dict.items()):
         bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
         
@@ -113,14 +151,22 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
         try:
 
-            # grid_width = find_nearest_pow_2(total_pixels)
-            grid_width = max_work_group_size
             # Execute the kernel
-            program.getFlakeySharpnesses.set_scalar_arg_dtypes([None, None, np.int32, np.int32, np.int32, np.float32])
+            program.getFlakeySharpnesses.set_scalar_arg_dtypes(
+                [
+                    None,
+                    None,
+                    np.int32,
+                    np.int32,
+                    None,  
+                    np.int32, 
+                    np.int32,
+                ])
             program.getFlakeySharpnesses(
-                queue, (100,), (100,),
-                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), np.int32(radius), np.float32(187)
+                queue, (max_work_group_size,), (max_work_group_size,),
+                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), circles_buf, np.int32(points_in_each_circle), np.int32(len(circle_points))
             )
+            
 
             # Wait for the operation to complete
             queue.finish()
@@ -135,7 +181,7 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
         
         np.put(changes_arr, changed_indecies, [i+1])
         message_queue.put((name, i, len(image_arr_dict)))
-
+    print(list(sharpnesses_gpu)[:100])
     return width, height, changes_arr, composite_image_gpu, sharpnesses_gpu
 
 print(__name__)
