@@ -19,8 +19,9 @@ import subprocess
 import sys
 import statistics
 import pyopencl as cl
-from sbNative.runtimetools import get_path
-
+from sbNative.runtimetools import get_path, exec_with_exc_tb
+import traceback
+import colorama
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
@@ -41,34 +42,6 @@ FILE_EXTENTIONS = {
         ".tif"
     ],
 }
-
-def place_patches_on_rect(width, height, r):
-    patches = []
-    # Distance between circle centers
-
-    # Place circles in the interior
-    for y in range(0, height, r):
-        for x in range(0, width, r):
-            patches.append((x, y))
-
-    return patches
-
-
-def get_points_of_patches(circles, radius):
-    all_points = []
-    
-    circle_template = []
-    for x in range(radius + 1):
-        for y in range(radius + 1):
-            circle_template.append((x, y))
-    
-    circle_template = np.array(circle_template)
-    for circle in circles:
-        tmp = circle_template.copy()
-        tmp[:, 0] += circle[0]
-        tmp[:, 1] += circle[1]
-        all_points.append(tmp)
-    return all_points
 
 
 def load_image(name):
@@ -100,6 +73,7 @@ def find_nearest_pow_2(val):
         if val < 2**i:
             return 2**i    
 
+
 def get_opencl_devices():
     platforms = cl.get_platforms()  # Get all platforms
     return {device.name: device for platform in platforms for device in platform.get_devices()}
@@ -119,7 +93,7 @@ def initialize_gpu_and_compile(device: cl.Device):
     return ctx, max_work_group_size, program, queue
 
 
-def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, message_queue):
+def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue):
     img1 = list(image_arr_dict.values())[0]
     
     width = int(img1.shape[1])
@@ -127,27 +101,20 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
     total_pixels = width*height
 
     composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
-    sharpnesses_gpu = np.zeros((total_pixels), dtype=np.float64)
-    previous_sharpnesses = [np.zeros((total_pixels), dtype=np.float64)]
-    changes_arr = np.zeros((total_pixels), dtype=np.uint8)
+    sharpness_gpu = np.zeros((total_pixels), dtype=np.float64)
+    image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
+    sharpnesses = {}
+    source_bufs = {}
 
     mf = cl.mem_flags
     destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
-    sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpnesses_gpu)
-    
-    print("Calculating patch points...")
-    start_time_tmp = time.time_ns()
-    patch_points = get_points_of_patches(place_patches_on_rect(width, height, radius), radius)
-    print(f"Time to calculate patch points: {(time.time_ns() - start_time_tmp) / (10 ** 9)}s ({len(patch_points)} patches)")
-    
-    patches_buf = cl.Buffer(ctx, mf.READ_ONLY | mf.COPY_HOST_PTR, hostbuf=np.array(patch_points).flatten(order="K"))
-    points_in_each_patch = patch_points[0].shape[0] 
+    sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
+        
 
     for i, (name, rgb) in enumerate(image_arr_dict.items()):
         bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
-        
-        previous_sharpnesses.append(np.zeros((total_pixels), dtype=np.uint32))
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
+        source_bufs[name] = source_buf
         try:
 
             # Execute the kernel
@@ -157,30 +124,84 @@ def render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, mes
                     None,
                     np.int32,
                     np.int32,
-                    None,  
-                    np.int32, 
                     np.int32,
                 ])
-            program.getFlakeySharpnesses(
-                queue, (max_work_group_size,), (max_work_group_size,),
-                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), patches_buf, np.int32(points_in_each_patch), np.int32(len(patch_points))
-            )
             
+            program.getFlakeySharpnesses(
+                queue, (total_pixels,), None,
+                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), np.int32(radius)
+            )
+
 
             # Wait for the operation to complete
             queue.finish()
 
             # Retrieve results from the GPU
-            cl.enqueue_copy(queue, composite_image_gpu, destination_buf)
-            cl.enqueue_copy(queue, sharpnesses_gpu, sharpnesses_buf)
+            cl.enqueue_copy(queue, sharpness_gpu, sharpnesses_buf)
         except:
             raise
-        previous_sharpnesses[i+1] = copy.deepcopy(sharpnesses_gpu)
-        changed_indecies = np.argwhere(previous_sharpnesses[i+1] - previous_sharpnesses[i] > 0)
+        sharpnesses[name] = copy.deepcopy(sharpness_gpu)
         
-        np.put(changes_arr, changed_indecies, [i+1])
         message_queue.put((name, i, len(image_arr_dict)))
-    return width, height, changes_arr, composite_image_gpu, sharpnesses_gpu
+    sharpnesses_flattened = np.array(list(sharpnesses.values())).T.flatten(order="K")
+    flattened_sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpnesses_flattened)
+    image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+    try:
+        program.chooseOriginPixelBySharpnesses.set_scalar_arg_dtypes(
+            [
+                None,
+                None,
+                np.int32,
+                np.int32,
+            ])
+        program.chooseOriginPixelBySharpnesses(
+            queue, (total_pixels,), None,
+            flattened_sharpnesses_buf, image_origin_buf, np.int32(total_pixels), np.int32(len(image_arr_dict))
+        )
+        queue.finish()
+        cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
+    except:
+        raise
+    else:
+        try:
+            # This is where the fun begins, the manipulation of the origin map, which decides which pixel to take from which image
+            #
+            image_origin_reshaped = image_origin_gpu.reshape((width, height))
+            try:
+                exec_with_exc_tb(image_origin_manipulation_code, globals(), locals())
+            except Exception as e:
+                print(colorama.Fore.RED + "Error in the origin manipulation code:")
+                print(traceback.format_exc())
+                print(colorama.Fore.RESET)
+            image_origin_gpu = image_origin_reshaped.reshape(-1)
+
+            image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+            for i, (name, flattened_image) in enumerate(source_bufs.items()):
+                program.pullPixelsByOriginImage.set_scalar_arg_dtypes([
+                    None,
+                    None,
+                    None,
+                    np.int32,
+                    np.int32,
+                    np.uint8,
+                ])
+
+                program.pullPixelsByOriginImage(
+                    queue, (total_pixels,), None,
+                    flattened_image,
+                    destination_buf,
+                    image_origin_buf,
+                    np.int32(width),
+                    np.int32(height),
+                    np.uint8(i)
+                )
+
+                queue.finish()
+                message_queue.put((name, i, len(image_arr_dict)))
+                cl.enqueue_copy(queue, composite_image_gpu, destination_buf)
+        except:
+            raise
+    return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
 
 print(__name__)
 if __name__ == '__main__':
@@ -309,9 +330,12 @@ if __name__ == '__main__':
     radius = 1
 
     sharpnesses_gpu = None
-    changes_arr = None
+    image_origin_gpu = None
     rendering_time = -1
     loading_time = -1
+
+    global image_origin_manipulation_code
+    image_origin_manipulation_code = "image_origin_reshaped = image_origin_reshaped"
 
 
 
@@ -409,7 +433,7 @@ if __name__ == '__main__':
         Thread(target=update_progress_bar_worker, args=(message_queue,)).start()
 
         render_time_start = time.time_ns()
-        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, ctx, max_work_group_size, program, queue, message_queue)
+        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue)
         
         
         rendering_time = (time.time_ns() - render_time_start) / (10 ** 9)
@@ -564,7 +588,24 @@ if __name__ == '__main__':
     radius_slider.set(1)
     radius_slider.grid(pady=5, row=1, column=0, sticky="nw")
 
+    origin_manipulation_textbox = customtkinter.CTkTextbox(settings_frame, text_color="white")
+    origin_manipulation_textbox.grid(pady=5, row=7, column=0, sticky="nw")
+    origin_manipulation_textbox.insert(1.0, image_origin_manipulation_code)
 
+    def on_origin_manipulation_textbox_change(event):
+        global image_origin_manipulation_code
+        image_origin_manipulation_code = origin_manipulation_textbox.get(1.0, "end-1c")
+        try:
+            compile(image_origin_manipulation_code, "<string>", "exec")
+        except SyntaxError:
+            origin_manipulation_textbox.configure(text_color="red")
+        else:
+            origin_manipulation_textbox.configure(text_color="white")
+
+    
+    origin_manipulation_textbox.bind("<KeyRelease>", on_origin_manipulation_textbox_change)
+    
+    
     def on_save_selected_button():
         global output_img
         global output_panel_packed
