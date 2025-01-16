@@ -168,7 +168,10 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             #
             image_origin_reshaped = image_origin_gpu.reshape((width, height))
             try:
-                exec_with_exc_tb(image_origin_manipulation_code, globals(), locals())
+                g = globals()
+                l = locals()
+                exec_with_exc_tb(image_origin_manipulation_code, g, l)
+                image_origin_reshaped = l["image_origin_reshaped"]
             except Exception as e:
                 print(colorama.Fore.RED + "Error in the origin manipulation code:")
                 print(traceback.format_exc())
@@ -454,7 +457,9 @@ if __name__ == '__main__':
         output_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = output_img)
         on_show_output_checkbox()
 
-        sharpness_img = convert_gray_arr_to_image(cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U), width, height)
+        sharpness_gray_normalized = cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
+        sharpness_img = convert_gray_arr_to_image(sharpness_gray_normalized, width, height)
+        
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
         on_show_sharpness_checkbox()
 
