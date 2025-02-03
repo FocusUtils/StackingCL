@@ -79,6 +79,7 @@ def get_opencl_devices():
     return {device.name: device for platform in platforms for device in platform.get_devices()}
     
 
+
 def initialize_gpu_and_compile(device: cl.Device):
     ctx = cl.Context([device])
     max_work_group_size = device.max_work_group_size
@@ -340,7 +341,17 @@ if __name__ == '__main__':
     global image_origin_manipulation_code
     image_origin_manipulation_code = "image_origin_reshaped = image_origin_reshaped"
 
-
+    
+    def zoom_event_callback(current_panel):
+        for other_panel in [output_panel, changes_panel, sharpness_panel]:
+            if other_panel is current_panel:
+                continue
+            other_panel.zoom_amount = current_panel.zoom_amount
+            other_panel.zoom_x_offset = current_panel.zoom_x_offset
+            other_panel.zoom_y_offset = current_panel.zoom_y_offset
+            other_panel.redraw_image()
+            
+    
 
     def pack_img_panel():
         global output_panel
@@ -451,16 +462,19 @@ if __name__ == '__main__':
 
         changes_img = convert_gray_arr_to_image(changes_arr * int(255 / len(image_arr_dict)), width, height)
         changes_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = changes_img)
+        changes_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_changes_checkbox()
 
         output_img = convert_color_arr_to_image(composite_image_gpu, width, height)
         output_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = output_img)
+        output_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_output_checkbox()
 
         sharpness_gray_normalized = cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
         sharpness_img = convert_gray_arr_to_image(sharpness_gray_normalized, width, height)
         
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
+        sharpness_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_sharpness_checkbox()
 
 

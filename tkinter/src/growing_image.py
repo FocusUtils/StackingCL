@@ -23,6 +23,7 @@ class GrowingImage(CTk.CTkCanvas):
         self.mouse_x = -1
         self.mouse_y = -1
         self.mouse_position_callback = mouse_position_callback
+        self.zoom_event_callbacks = []
 
         self.src_aspect_ratio = self.src_img.shape[0] / self.src_img.shape[1]
         self.bind("<Enter>", self._set_mouseover_true)
@@ -37,7 +38,9 @@ class GrowingImage(CTk.CTkCanvas):
             self.zoom_x_offset = 0
             self.zoom_y_offset = 0
 
-
+    def add_zoom_event_callback(self, callback):
+        self.zoom_event_callbacks.append(callback)
+    
 
     def _mouse_motion(self, event):
         if not self.is_mouse_over:
@@ -100,7 +103,11 @@ class GrowingImage(CTk.CTkCanvas):
             
             if prev_zoom_amount!= self.zoom_amount:
                 self._redraw_image()
-        
+                for callback in self.zoom_event_callbacks:
+                    callback(self)
+    
+    def redraw_image(self):
+        self._redraw_image()
 
 
     def _config_size(self, event):
