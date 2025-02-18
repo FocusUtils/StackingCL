@@ -22,11 +22,16 @@ import pyopencl as cl
 from sbNative.runtimetools import get_path, exec_with_exc_tb
 import traceback
 import colorama
+if __name__ == "__main__":
+    from lazyloading_image import LazyImage
+
 
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
 
 MAX_CORES_FOR_MP = mp.cpu_count()-1
+print(MAX_CORES_FOR_MP)
+
 
 FILE_EXTENTIONS = {
     "RAW": [
@@ -54,7 +59,7 @@ def load_image(name):
 
     if rgb.shape[0] > rgb.shape[1]:
         
-        rgb = cv2.rotate(rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        rgb = cv2.rotate(rgb, cv2.ROTATE_90_CLOCKWISE)
 
 
     ## denoising
@@ -94,7 +99,7 @@ def initialize_gpu_and_compile(device: cl.Device):
 
 
 def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue):
-    img1 = list(image_arr_dict.values())[0]
+    img1 = list(image_arr_dict.values())[0].rgb
     
     width = int(img1.shape[1])
     height = int(img1.shape[0])
@@ -111,8 +116,9 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
     sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
         
 
-    for i, (name, rgb) in enumerate(image_arr_dict.items()):
-        bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
+    for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
+        bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
+        lazyimage.cache()
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
         source_bufs[name] = source_buf
         try:
@@ -206,7 +212,6 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             raise
     return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
 
-print(__name__)
 if __name__ == '__main__':
     if sys.platform.startswith("win32"):
         mp.freeze_support()
@@ -291,7 +296,7 @@ if __name__ == '__main__':
 
             add_image_to_scrollbar(img, os.path.basename(name))
 
-            image_arr_dict[os.path.basename(name)] = rgb
+            image_arr_dict[os.path.basename(name)] = LazyImage(rgb, name)
 
             del img
             gc.collect()

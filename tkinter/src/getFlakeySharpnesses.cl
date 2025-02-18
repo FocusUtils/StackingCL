@@ -50,10 +50,11 @@ kernel void getFlakeySharpnesses(__global char *source,
     }
 
     double sharpness = (double)(delta) / (double)(calculated_pixels * 3 * 255);
+
     double brightness_percentage = (double)(total_brightness) / (double)(calculated_pixels * 3 * 255);
     double sharpness_multiplier = 1 / (65 * radius * radius * brightness_percentage);
     //printf("brightness_percentage: %f, sharpness before: %f, sharpness after: %f\n", brightness_percentage, sharpness, sharpness * sharpness_multiplier);
-    sharpness = sharpness * sharpness_multiplier;
+    //sharpness = sharpness * sharpness_multiplier;
     if (sharpness > flakey_sharpnesses[thrd_i]) {
         flakey_sharpnesses[thrd_i] = sharpness;
     }
