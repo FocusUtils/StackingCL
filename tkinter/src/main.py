@@ -22,6 +22,10 @@ import pyopencl as cl
 from sbNative.runtimetools import get_path, exec_with_exc_tb
 import traceback
 import colorama
+import psutil
+from sbNative.debugtools import log, ilog
+from pympler import muppy, summary
+import weakref
 if __name__ == "__main__":
     from lazyloading_image import LazyImage
 
@@ -30,7 +34,7 @@ os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
 
 MAX_CORES_FOR_MP = mp.cpu_count()-1
-print(MAX_CORES_FOR_MP)
+ilog("mp cores assigned", MAX_CORES_FOR_MP)
 
 
 FILE_EXTENTIONS = {
@@ -106,22 +110,18 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
     height = int(img1.shape[0])
     total_pixels = width*height
 
-    composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
     sharpness_gpu = np.zeros((total_pixels), dtype=np.float64)
     image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
-    sharpnesses = {}
-    source_bufs = {}
+    sharpnesses_flattened = np.zeros((total_pixels * len(image_arr_dict)), dtype=np.float64)
 
     mf = cl.mem_flags
-    destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
     sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
-        
 
     for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
         bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
         lazyimage.cache()
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
-        source_bufs[name] = source_buf
+        del bgr_flattened
         try:
 
             # Execute the kernel
@@ -147,11 +147,13 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             cl.enqueue_copy(queue, sharpness_gpu, sharpnesses_buf)
         except:
             raise
-        sharpnesses[name] = copy.deepcopy(sharpness_gpu)
+        sharpnesses_flattened[i*total_pixels:(i+1)*total_pixels] = sharpness_gpu
         
         message_queue.put((name, i, len(image_arr_dict)))
-    sharpnesses_flattened = np.array(list(sharpnesses.values())).T.flatten(order="K")
     flattened_sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpnesses_flattened)
+    log(f"{sys.getsizeof(sharpnesses_flattened)/1024**3:.2f} GB")
+
+    del sharpnesses_flattened
     image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
     try:
         program.chooseOriginPixelBySharpnesses.set_scalar_arg_dtypes(
@@ -169,49 +171,56 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
         cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
     except:
         raise
-    else:
+    try:
+        # This is where the fun begins, the manipulation of the origin map, which decides which pixel to take from which image
+        #
+        image_origin_reshaped = image_origin_gpu.reshape((width, height))
+        
+        composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
+        destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
         try:
-            # This is where the fun begins, the manipulation of the origin map, which decides which pixel to take from which image
-            #
-            image_origin_reshaped = image_origin_gpu.reshape((width, height))
-            try:
-                g = globals()
-                l = locals()
-                exec_with_exc_tb(image_origin_manipulation_code, g, l)
-                image_origin_reshaped = l["image_origin_reshaped"]
-            except Exception as e:
-                print(colorama.Fore.RED + "Error in the origin manipulation code:")
-                print(traceback.format_exc())
-                print(colorama.Fore.RESET)
-            image_origin_gpu = image_origin_reshaped.reshape(-1)
+            g = globals()
+            l = locals()
+            exec_with_exc_tb(image_origin_manipulation_code, g, l)
+            image_origin_reshaped = l["image_origin_reshaped"]
+        except Exception as e:
+            print(colorama.Fore.RED + "Error in the origin manipulation code:")
+            print(traceback.format_exc())
+            print(colorama.Fore.RESET)
+        image_origin_gpu = image_origin_reshaped.reshape(-1)
+        del image_origin_reshaped
+        image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+        
+        for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
+            bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
+            lazyimage.cache()
+            source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
+            program.pullPixelsByOriginImage.set_scalar_arg_dtypes([
+                None,
+                None,
+                None,
+                np.int32,
+                np.int32,
+                np.uint8,
+            ])
 
-            image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
-            for i, (name, flattened_image) in enumerate(source_bufs.items()):
-                program.pullPixelsByOriginImage.set_scalar_arg_dtypes([
-                    None,
-                    None,
-                    None,
-                    np.int32,
-                    np.int32,
-                    np.uint8,
-                ])
+            program.pullPixelsByOriginImage(
+                queue, (total_pixels,), None,
+                source_buf,
+                destination_buf,
+                image_origin_buf,
+                np.int32(width),
+                np.int32(height),
+                np.uint8(i)
+            )
 
-                program.pullPixelsByOriginImage(
-                    queue, (total_pixels,), None,
-                    flattened_image,
-                    destination_buf,
-                    image_origin_buf,
-                    np.int32(width),
-                    np.int32(height),
-                    np.uint8(i)
-                )
+            queue.finish()
+            message_queue.put((name, i, len(image_arr_dict)))
+            cl.enqueue_copy(queue, composite_image_gpu, destination_buf)
+        return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
+    except:
+        raise
 
-                queue.finish()
-                message_queue.put((name, i, len(image_arr_dict)))
-                cl.enqueue_copy(queue, composite_image_gpu, destination_buf)
-        except:
-            raise
-    return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
 
 if __name__ == '__main__':
     if sys.platform.startswith("win32"):
@@ -267,6 +276,7 @@ if __name__ == '__main__':
         img_panel.pack(padx=5, pady=5)
         name_panel.pack(padx=2, pady=2)
         destroy_button.pack(padx=2, pady=5)
+        del img
 
 
     def on_load_new_image():
@@ -293,14 +303,16 @@ if __name__ == '__main__':
             progress_bar.set((idx+1)/len(image_paths))
             progress_info_strvar.set(f"{(idx+1)}/{len(image_paths)} Images Loaded")
 
-            img = Image.fromarray(rgb)
-
+            img = Image.fromarray(cv2.resize(rgb, (int(rgb.shape[1]//5), int(rgb.shape[0]//5))))
+            weakref_to_image = weakref.ref(img)
             add_image_to_scrollbar(img, os.path.basename(name))
 
             image_arr_dict[os.path.basename(name)] = LazyImage(rgb, name)
-
+            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
             del img
+            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
             gc.collect()
+            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
         loading_time = (time.time_ns() - img_load_time_start) / (10 ** 9) 
         
         deinitialize_progress()
