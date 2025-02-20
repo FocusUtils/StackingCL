@@ -30,6 +30,17 @@ if __name__ == "__main__":
     from lazyloading_image import LazyImage
 
 
+class ProgressBarMessage:
+    def __init__(self, work_prefix, work_suffix, work_done, work_total, estimated_time_remaining):
+        self.work_prefix = work_prefix
+        self.work_suffix = work_suffix
+        self.work_done = work_done
+        self.work_total = work_total
+        self.estimated_time_remaining = estimated_time_remaining
+
+    def is_done(self):
+        return self.work_done+1 == self.work_total
+
 os.environ['PYOPENCL_COMPILER_OUTPUT'] = '1'
 
 
@@ -105,6 +116,9 @@ def initialize_gpu_and_compile(device: cl.Device):
 
 def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue):
     img1 = list(image_arr_dict.values())[0].rgb
+
+    def get_estimated_pulling_time(calculating_sharpnesses_time):
+        return (calculating_sharpnesses_time**(1/2.2) + .3 * len(image_arr_dict) - .1 * radius)
     
     width = int(img1.shape[1])
     height = int(img1.shape[0])
@@ -112,11 +126,12 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
 
     sharpness_gpu = np.zeros((total_pixels), dtype=np.float64)
     image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
-    sharpnesses_flattened = np.zeros((total_pixels * len(image_arr_dict)), dtype=np.float64)
 
     mf = cl.mem_flags
     sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
-
+    image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+    start_calculating_sharpnesses = time.time_ns()
+    start_sharpness_and_origin_time = time.time_ns()
     for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
         bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
         lazyimage.cache()
@@ -129,6 +144,8 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
                 [
                     None,
                     None,
+                    None,
+                    np.int8,
                     np.int32,
                     np.int32,
                     np.int32,
@@ -136,7 +153,7 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             
             program.getFlakeySharpnesses(
                 queue, (total_pixels,), None,
-                source_buf, sharpnesses_buf, np.int32(width), np.int32(height), np.int32(radius)
+                source_buf, sharpnesses_buf, image_origin_buf, np.int8(i), np.int32(width), np.int32(height), np.int32(radius)
             )
 
 
@@ -145,35 +162,24 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
 
             # Retrieve results from the GPU
             cl.enqueue_copy(queue, sharpness_gpu, sharpnesses_buf)
+            cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
         except:
             raise
-        sharpnesses_flattened[i*total_pixels:(i+1)*total_pixels] = sharpness_gpu
         
-        message_queue.put((name, i, len(image_arr_dict)))
-    flattened_sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpnesses_flattened)
-    log(f"{sys.getsizeof(sharpnesses_flattened)/1024**3:.2f} GB")
+        sharpness_and_origin_time_until_now = (time.time_ns() - start_sharpness_and_origin_time) / (10 ** 9)
+        calculating_sharpnesses_time = (sharpness_and_origin_time_until_now/(i + 1)) * len(image_arr_dict)
+        log(sharpness_and_origin_time_until_now, calculating_sharpnesses_time, sharpness_and_origin_time_until_now)
+        eta = get_estimated_pulling_time(calculating_sharpnesses_time) + calculating_sharpnesses_time - sharpness_and_origin_time_until_now
+        message_queue.put(ProgressBarMessage("Calculating sharpnesses:", f"Image {name}", i, 2*len(image_arr_dict)+1, eta))
+        
+        
+    calculating_sharpnesses_time = (time.time_ns() - start_calculating_sharpnesses) / (10 ** 9)
+    
 
-    del sharpnesses_flattened
-    image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
-    try:
-        program.chooseOriginPixelBySharpnesses.set_scalar_arg_dtypes(
-            [
-                None,
-                None,
-                np.int32,
-                np.int32,
-            ])
-        program.chooseOriginPixelBySharpnesses(
-            queue, (total_pixels,), None,
-            flattened_sharpnesses_buf, image_origin_buf, np.int32(total_pixels), np.int32(len(image_arr_dict))
-        )
-        queue.finish()
-        cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
-    except:
-        raise
     try:
         # This is where the fun begins, the manipulation of the origin map, which decides which pixel to take from which image
         #
+        message_queue.put(ProgressBarMessage("Manipulating origin map:", "", len(image_arr_dict), 2*len(image_arr_dict)+1, eta))
         image_origin_reshaped = image_origin_gpu.reshape((width, height))
         
         composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
@@ -187,9 +193,12 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             print(colorama.Fore.RED + "Error in the origin manipulation code:")
             print(traceback.format_exc())
             print(colorama.Fore.RESET)
+        
+        start_pull_pixels_time = time.time_ns()
         image_origin_gpu = image_origin_reshaped.reshape(-1)
         del image_origin_reshaped
         image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+
         
         for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
             bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
@@ -215,8 +224,13 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             )
 
             queue.finish()
-            message_queue.put((name, i, len(image_arr_dict)))
             cl.enqueue_copy(queue, composite_image_gpu, destination_buf)
+            pull_pixel_time_until_now = (time.time_ns() - start_pull_pixels_time) / (10 ** 9)
+            eta = pull_pixel_time_until_now/(i + 1) * len(image_arr_dict) - pull_pixel_time_until_now
+            message_queue.put(ProgressBarMessage("Pulling pixels by origin image:", f"Image {name}", len(image_arr_dict)+i+1, 2*len(image_arr_dict)+1, eta))
+
+        
+        print("Real total time", (time.time_ns() - start_calculating_sharpnesses) / (10 ** 9))
         return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
     except:
         raise
@@ -284,8 +298,6 @@ if __name__ == '__main__':
         selected_img_files = filedialog.askopenfiles(title="Open Images for the render queue", filetypes=[("Image-files", ".tiff .tif .png .jpg .jpeg .RAW .NEF")])
         if not selected_img_files:
             return
-        
-        initialize_progress("Loading Images:")
 
         img_load_time_start = time.time_ns()
         image_paths = []
@@ -298,24 +310,19 @@ if __name__ == '__main__':
 
         
         rgb_values = mp.Pool(min(MAX_CORES_FOR_MP, len(image_paths))).imap(load_image, image_paths)
-
+        start_image_load_time = time.time_ns()
         for idx, (name, rgb) in enumerate(zip(image_paths, rgb_values)):
-            progress_bar.set((idx+1)/len(image_paths))
-            progress_info_strvar.set(f"{(idx+1)}/{len(image_paths)} Images Loaded")
 
             img = Image.fromarray(cv2.resize(rgb, (int(rgb.shape[1]//5), int(rgb.shape[0]//5))))
-            weakref_to_image = weakref.ref(img)
             add_image_to_scrollbar(img, os.path.basename(name))
 
             image_arr_dict[os.path.basename(name)] = LazyImage(rgb, name)
-            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
             del img
-            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
             gc.collect()
-            log(weakref_to_image(), f"used memory: {psutil.Process(os.getpid()).memory_info().rss / 1024**2:.2f}MB")
+            eta = (time.time_ns() - start_image_load_time) / (10 ** 9) / (idx + 1) * (len(image_paths) - idx)
+            message_queue.put(ProgressBarMessage("Loading images:", f"Image {os.path.basename(name)}", idx, len(image_paths), eta))
         loading_time = (time.time_ns() - img_load_time_start) / (10 ** 9) 
         
-        deinitialize_progress()
 
 
     global output_panel
@@ -442,27 +449,6 @@ if __name__ == '__main__':
         global changes_arr
         global rendering_time
         
-        manager = mp.Manager()
-        message_queue = manager.Queue()
-
-        def update_progress_bar_worker(message_queue):
-            initialize_progress("Rendering Images:")
-            start_time = time.perf_counter_ns()
-            while True:
-                name, i, length = message_queue.get()
-                if i+1 == length:
-                    break
-
-                progress_bar.set((i+1)/length)
-                time_elapsed = (time.perf_counter_ns() - start_time) * 10**-9
-                time_per_image = time_elapsed / (i+1)
-                progress_info_strvar.set(f"From Image {name} ({i+1}/{length}, {time_per_image*(length-i-1):.0f}s remaining)")
-            
-            deinitialize_progress()
-            
-
-        Thread(target=update_progress_bar_worker, args=(message_queue,)).start()
-
         render_time_start = time.time_ns()
         width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue)
         
@@ -486,8 +472,12 @@ if __name__ == '__main__':
         output_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = output_img)
         output_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_output_checkbox()
-
-        sharpness_gray_normalized = cv2.normalize(sharpnesses_gpu, None, 255, 0, cv2.NORM_MINMAX, cv2.CV_8U)
+        
+        # sharpness_gray_normalized = (sharpnesses_gpu * (127/np.average(sharpnesses_gpu))).astype(np.uint8)
+        sharpness_gray_normalized = (sharpnesses_gpu * (255/np.amax(sharpnesses_gpu))).astype(np.uint8)
+        # ilog("min", np.amin(sharpness_gray_normalized))
+        # ilog("max", np.amax(sharpness_gray_normalized))
+        # ilog("avg", np.average(sharpness_gray_normalized))
         sharpness_img = convert_gray_arr_to_image(sharpness_gray_normalized, width, height)
         
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
@@ -749,5 +739,45 @@ if __name__ == '__main__':
                                                     text="Load new image", command=launch_on_load_new_image)
     load_new_image_button.pack(pady=(12, 5))
 
+    def update_progress_bar_worker(message_queue):
+        message = None
+        finish_time = -1
+        initialized = False
+        while True:
+            time.sleep(.1)
+            try:
+                message = message_queue.get_nowait()
+                if message.estimated_time_remaining != -1:
+                    finish_time = message.estimated_time_remaining + time.time()
+            except:
+                pass
+            if message is None:
+                continue
+
+            if message.is_done():
+                deinitialize_progress()
+                initialized = False
+                continue
+
+            if not initialized or message.work_prefix != progress_label_strvar.get():
+                initialize_progress(message.work_prefix)
+                initialized = True
+
+            progress_bar.set((message.work_done+1)/message.work_total)
+            suffix_texts = ["("]
+            if message.work_total != -1:
+                suffix_texts.append(f"{message.work_done+1}/{message.work_total}")
+            if message.work_suffix:
+                suffix_texts.append(message.work_suffix)
+            if finish_time != -1:
+                suffix_texts.append(f"ETA: {finish_time - time.time():.2f}s")
+            suffix_texts.append(")")
+            progress_info_strvar.set(" ".join(suffix_texts))
+        
+        
+
+    manager = mp.Manager()
+    message_queue = manager.Queue()
+    Thread(target=update_progress_bar_worker, args=(message_queue,)).start()
 
     root.mainloop()

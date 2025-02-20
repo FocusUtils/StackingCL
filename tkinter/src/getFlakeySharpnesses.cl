@@ -6,6 +6,8 @@ int get_pos(int x, int y, int width, int color) {
 
 kernel void getFlakeySharpnesses(__global char *source,
                                __global double *flakey_sharpnesses,
+                               __global char* pixel_origins,
+                               char source_index,
                                int width, int height, int radius) {
     const int thrd_i = get_global_id(0);
 
@@ -58,29 +60,30 @@ kernel void getFlakeySharpnesses(__global char *source,
     sharpness = sharpness * sharpness_coefficient;
     if (sharpness > flakey_sharpnesses[thrd_i]) {
         flakey_sharpnesses[thrd_i] = sharpness;
+        pixel_origins[thrd_i] = source_index;
     }
 }
 
-kernel void chooseOriginPixelBySharpnesses(__global double *all_sharpnesses,
-                                            __global char* pixel_origins,
-                                            int pixels_per_image,
-                                            int image_count) {
-    const int thrd_i = get_global_id(0);
+// kernel void chooseOriginPixelBySharpnesses(__global double *all_sharpnesses,
+//                                             __global char* pixel_origins,
+//                                             int pixels_per_image,
+//                                             int image_count) {
+//     const int thrd_i = get_global_id(0);
 
-    if (thrd_i > pixels_per_image) {
-        return;
-    }
+//     if (thrd_i > pixels_per_image) {
+//         return;
+//     }
 
-    double max_sharpness = 0;
-    int max_sharpness_index = 0;
-    for (int i = 0; i < image_count; i++) {
-        if (all_sharpnesses[i * pixels_per_image + thrd_i] > max_sharpness) {
-            max_sharpness = all_sharpnesses[i * pixels_per_image + thrd_i];
-            max_sharpness_index = i;
-        }
-    }
-    pixel_origins[thrd_i] = max_sharpness_index;
-}
+//     double max_sharpness = 0;
+//     int max_sharpness_index = 0;
+//     for (int i = 0; i < image_count; i++) {
+//         if (all_sharpnesses[i * pixels_per_image + thrd_i] > max_sharpness) {
+//             max_sharpness = all_sharpnesses[i * pixels_per_image + thrd_i];
+//             max_sharpness_index = i;
+//         }
+//     }
+//     pixel_origins[thrd_i] = max_sharpness_index;
+// }
 
 kernel void pullPixelsByOriginImage(__global char *source,
                                     __global char *destination,
