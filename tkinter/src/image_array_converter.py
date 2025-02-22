@@ -1,7 +1,10 @@
 import cv2
 
+def convert_gray_arr_to_gray_image(arr, width, height):
+    return cv2.flip(cv2.rotate(arr.reshape(width, height), cv2.ROTATE_90_CLOCKWISE), 1)
+
 def convert_gray_arr_to_image(arr, width, height):
-    return cv2.cvtColor(cv2.flip(cv2.rotate(arr.reshape(width, height), cv2.ROTATE_90_CLOCKWISE), 1), cv2.COLOR_GRAY2RGB)
+    return cv2.cvtColor(convert_gray_arr_to_gray_image(arr, width, height), cv2.COLOR_GRAY2RGB)
 
 
 def convert_color_arr_to_image(arr, width, height):

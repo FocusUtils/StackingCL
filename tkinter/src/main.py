@@ -1,8 +1,7 @@
-import tkinter as tk
 import customtkinter
 from scrollable_frame import VerticalScrolledFrame
 from preview_image import PreviewImage
-from PIL import ImageTk, Image
+from PIL import Image
 import rawpy    
 from tkinter import filedialog, messagebox, RIGHT, LEFT
 import time
@@ -10,8 +9,7 @@ import gc
 import os
 import cv2
 import numpy as np
-import copy
-from image_array_converter import convert_color_arr_to_image, convert_gray_arr_to_image
+from image_array_converter import convert_color_arr_to_image, convert_gray_arr_to_image, convert_gray_arr_to_gray_image
 from math import sqrt
 from threading import Thread
 import multiprocess as mp
@@ -22,10 +20,8 @@ import pyopencl as cl
 from sbNative.runtimetools import get_path, exec_with_exc_tb
 import traceback
 import colorama
-import psutil
 from sbNative.debugtools import log, ilog
-from pympler import muppy, summary
-import weakref
+import math
 if __name__ == "__main__":
     from lazyloading_image import LazyImage
 
@@ -63,6 +59,20 @@ FILE_EXTENTIONS = {
     ],
 }
 
+
+BLUE2ORANGE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
+ORANGE2BLUE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
+for i in range(256):
+    
+    
+    t = i / 255.0  # Normalize
+    t = 0.2 * math.tan(2.3 * (t - 0.5)) + 0.5
+    BLUE2ORANGE_LUT[i, 0] = [255 * (1 - t), 100 * (1 - t/3), 255 * t]  # [B, G, R]
+    ORANGE2BLUE_LUT[i, 0] = [255 * t, 100 * (1 - t/3), 255 * (1 - t)]  # [B, G, R]
+
+
+def apply_lut_to_gray(gray, inverted=False):
+    return cv2.LUT(cv2.merge([gray, gray, gray]), ORANGE2BLUE_LUT if inverted else BLUE2ORANGE_LUT)
 
 def load_image(name):
     if any(name.lower().endswith(ending) for ending in FILE_EXTENTIONS["CV2"]):
@@ -168,7 +178,6 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
         
         sharpness_and_origin_time_until_now = (time.time_ns() - start_sharpness_and_origin_time) / (10 ** 9)
         calculating_sharpnesses_time = (sharpness_and_origin_time_until_now/(i + 1)) * len(image_arr_dict)
-        log(sharpness_and_origin_time_until_now, calculating_sharpnesses_time, sharpness_and_origin_time_until_now)
         eta = get_estimated_pulling_time(calculating_sharpnesses_time) + calculating_sharpnesses_time - sharpness_and_origin_time_until_now
         message_queue.put(ProgressBarMessage("Calculating sharpnesses:", f"Image {name}", i, 2*len(image_arr_dict)+1, eta))
         
@@ -230,7 +239,6 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             message_queue.put(ProgressBarMessage("Pulling pixels by origin image:", f"Image {name}", len(image_arr_dict)+i+1, 2*len(image_arr_dict)+1, eta))
 
         
-        print("Real total time", (time.time_ns() - start_calculating_sharpnesses) / (10 ** 9))
         return width, height, image_origin_gpu, composite_image_gpu, sharpness_gpu
     except:
         raise
@@ -258,7 +266,6 @@ if __name__ == '__main__':
 
     def add_image_to_scrollbar(img, name):
         container = customtkinter.CTkFrame(image_preview_frame.interior)
-        container.pack(padx=0, pady=5)
 
         target_diag_size = sqrt(2)*150
 
@@ -291,6 +298,7 @@ if __name__ == '__main__':
         name_panel.pack(padx=2, pady=2)
         destroy_button.pack(padx=2, pady=5)
         del img
+        container.pack(padx=0, pady=5)
 
 
     def on_load_new_image():
@@ -463,7 +471,7 @@ if __name__ == '__main__':
         rendered_images_frame.grid(row=1, column=0, columnspan=3, sticky="nesw")
         
 
-        changes_img = convert_gray_arr_to_image(changes_arr * int(255 / len(image_arr_dict)), width, height)
+        changes_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(changes_arr * int(255 / len(image_arr_dict)), width, height), inverted=True)
         changes_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = changes_img)
         changes_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_changes_checkbox()
@@ -473,13 +481,9 @@ if __name__ == '__main__':
         output_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_output_checkbox()
         
-        # sharpness_gray_normalized = (sharpnesses_gpu * (127/np.average(sharpnesses_gpu))).astype(np.uint8)
-        sharpness_gray_normalized = (sharpnesses_gpu * (255/np.amax(sharpnesses_gpu))).astype(np.uint8)
-        # ilog("min", np.amin(sharpness_gray_normalized))
-        # ilog("max", np.amax(sharpness_gray_normalized))
-        # ilog("avg", np.average(sharpness_gray_normalized))
-        sharpness_img = convert_gray_arr_to_image(sharpness_gray_normalized, width, height)
-        
+        sharpness_gray_normalized = (sharpnesses_gpu * (127/np.percentile(sharpnesses_gpu, 75))).astype(np.uint8)
+        sharpness_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(sharpness_gray_normalized, width, height))
+
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
         sharpness_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_sharpness_checkbox()
@@ -741,22 +745,29 @@ if __name__ == '__main__':
 
     def update_progress_bar_worker(message_queue):
         message = None
-        finish_time = -1
+        target_finish_time = -1
+        shown_finish_time = -1
         initialized = False
         while True:
-            time.sleep(.1)
             try:
                 message = message_queue.get_nowait()
                 if message.estimated_time_remaining != -1:
-                    finish_time = message.estimated_time_remaining + time.time()
+                    target_finish_time = message.estimated_time_remaining + time.time()
+                    print("target_finish_time", target_finish_time)
+                    print("shown_finish_time", shown_finish_time)
+                    if shown_finish_time == -1:
+                        shown_finish_time = target_finish_time
             except:
                 pass
+            time.sleep(.1)
+            shown_finish_time += (target_finish_time - shown_finish_time) * .9
             if message is None:
                 continue
 
             if message.is_done():
                 deinitialize_progress()
                 initialized = False
+                shown_finish_time = -1
                 continue
 
             if not initialized or message.work_prefix != progress_label_strvar.get():
@@ -769,8 +780,8 @@ if __name__ == '__main__':
                 suffix_texts.append(f"{message.work_done+1}/{message.work_total}")
             if message.work_suffix:
                 suffix_texts.append(message.work_suffix)
-            if finish_time != -1:
-                suffix_texts.append(f"ETA: {finish_time - time.time():.2f}s")
+            if target_finish_time != -1:
+                suffix_texts.append(f"ETA: {shown_finish_time - time.time():.2f}s")
             suffix_texts.append(")")
             progress_info_strvar.set(" ".join(suffix_texts))
         
