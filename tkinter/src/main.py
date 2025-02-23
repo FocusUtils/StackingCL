@@ -22,8 +22,64 @@ import traceback
 import colorama
 from sbNative.debugtools import log, ilog
 import math
+import json
 if __name__ == "__main__":
     from lazyloading_image import LazyImage
+
+
+def normalize_sharpnesses(sharpness_gpu_original, width, height):
+    BINS = 4096*256
+
+    orig_hist, _ = np.histogram(sharpness_gpu_original, bins=BINS, range=(0,.001))
+    p = 0.001
+
+    orig_hist_at_least_p_percent = orig_hist[orig_hist > width*height*p]
+    hist_relevance = orig_hist[:-2] - np.abs(np.diff(np.diff(orig_hist)))
+    # orig_hist_max = np.max(orig_hist)
+    orig_hist_median = np.median(orig_hist_at_least_p_percent)
+
+    orig_hist_low_cutoff = orig_hist_median
+
+    # print(orig_hist_max, orig_hist_median, orig_hist_low_cutoff)
+    min_val = 0
+    for i in range(len(orig_hist)-2):
+        if hist_relevance[i] > orig_hist_low_cutoff:
+            min_val = i
+            break
+    max_val = len(orig_hist) - 1
+    for i in range(len(orig_hist)-3, -1, -1):
+        if hist_relevance[i] > orig_hist_low_cutoff:
+            max_val = i
+            break
+
+    min_val = min_val / BINS * 0.001
+    max_val = max_val / BINS * 0.001
+
+    # print(min_val, max_val)
+    sharpness = sharpness_gpu_original.copy()
+    sharpness = (max_val) / (sharpness + min_val)
+    # print(np.min(sharpness), np.max(sharpness))
+    # sharpness_hist, _ = np.histogram(sharpness, bins=BINS, range=(0,.001))
+
+    # Corrected scale factor
+    # histo_plot = plt.subplot(3, 1, 1)
+    # histo_plot2 = plt.subplot(3, 1, 2)
+    # image_plot = plt.subplot(3, 1, 3)
+    # image_plot.figure.set_size_inches(10, 10)
+    # image_plot.imshow(convert_gray_arr_to_image((sharpness * 255 / np.max(sharpness)).astype(np.uint8), WIDTH, HEIGHT))
+    # histo_plot.plot(_[:-3], orig_hist[:-2], label="orig hist")
+    # twin = histo_plot.twinx()
+    # twin.plot(_[:-3], hist_relevance, label="orig hist relevance", color="green", linestyle="--")
+    # histo_plot2.plot(_[:-1], sharpness_hist, label="sharpness hist", color="orange")
+    # histo_plot.axhline(orig_hist_low_cutoff, color="red", linestyle="--")
+    # histo_plot.axvline(min_val, color="red", linestyle="--")
+    # histo_plot.axvline(max_val, color="red", linestyle="--")
+    # histo_plot.set_xscale("log")
+    # histo_plot2.set_xscale("log")
+    # histo_plot.legend()
+    # twin.legend()
+
+    return (sharpness * 255 / np.max(sharpness)).astype(np.uint8)
 
 
 class ProgressBarMessage:
@@ -59,6 +115,10 @@ FILE_EXTENTIONS = {
     ],
 }
 
+def get_colortone(t):
+    #       B                   G                   R
+    return [255 * (1 - t),      80 * (t),    255 * t]
+
 
 BLUE2ORANGE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
 ORANGE2BLUE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
@@ -67,8 +127,8 @@ for i in range(256):
     
     t = i / 255.0  # Normalize
     t = 0.2 * math.tan(2.3 * (t - 0.5)) + 0.5
-    BLUE2ORANGE_LUT[i, 0] = [255 * (1 - t), 100 * (1 - t/3), 255 * t]  # [B, G, R]
-    ORANGE2BLUE_LUT[i, 0] = [255 * t, 100 * (1 - t/3), 255 * (1 - t)]  # [B, G, R]
+    BLUE2ORANGE_LUT[i, 0] = get_colortone(t)
+    ORANGE2BLUE_LUT[i, 0] = get_colortone(1 - t)
 
 
 def apply_lut_to_gray(gray, inverted=False):
@@ -481,9 +541,11 @@ if __name__ == '__main__':
         output_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_output_checkbox()
         
-        sharpness_gray_normalized = (sharpnesses_gpu * (127/np.percentile(sharpnesses_gpu, 75))).astype(np.uint8)
-        sharpness_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(sharpness_gray_normalized, width, height))
-
+        # with open("sharpnesses.txt", "w") as wf:
+        #     wf.write(str(list(sharpnesses_gpu)))
+        sharpness_gray_normalized = normalize_sharpnesses(sharpnesses_gpu, width, height)
+        sharpness_img = convert_gray_arr_to_image(sharpness_gray_normalized, width, height)
+        print(width, height)
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
         sharpness_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_sharpness_checkbox()

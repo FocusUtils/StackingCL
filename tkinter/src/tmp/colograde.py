@@ -8,17 +8,24 @@ for i in range(256):
     gray[:, i] = i
 
 
-lut = np.zeros((256, 1, 3), dtype=np.uint8)
+def get_colortone(t):
+    #       B                   G                   R
+    return [255 * (1 - t),      80 * (t),    255 * t]
+
+
+BLUE2ORANGE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
+ORANGE2BLUE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
 for i in range(256):
     
     
     t = i / 255.0  # Normalize
     t = 0.2 * math.tan(2.3 * (t - 0.5)) + 0.5
-    lut[i, 0] = [255 * (1 - t), 100 * (1 - t/3), 255 * t]  # [B, G, R]
+    BLUE2ORANGE_LUT[i, 0] = get_colortone(t)
+    ORANGE2BLUE_LUT[i, 0] = get_colortone(1 - t)
 
-print(lut)
+print(BLUE2ORANGE_LUT)
 # Apply the color mapping
-colorized = cv2.LUT(cv2.merge([gray, gray, gray]), lut)
+colorized = cv2.LUT(cv2.merge([gray, gray, gray]), BLUE2ORANGE_LUT)
 
 cv2.imshow('gray', gray)
 cv2.imshow('colorized', colorized)
