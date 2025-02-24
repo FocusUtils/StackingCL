@@ -4,10 +4,10 @@ int get_pos(int x, int y, int width, int color) {
 
 
 
-kernel void getFlakeySharpnesses(__global char *source,
+kernel void getFlakeySharpnesses(__global uchar *source,
                                __global double *flakey_sharpnesses,
-                               __global char* pixel_origins,
-                               char source_index,
+                               __global uchar* pixel_origins,
+                               uchar source_index,
                                int width, int height, int radius) {
     const int thrd_i = get_global_id(0);
 
@@ -18,14 +18,14 @@ kernel void getFlakeySharpnesses(__global char *source,
     int center_x = thrd_i / height;
     int center_y = thrd_i % height;
 
-    char center_b = source[get_pos(center_x, center_y, width, 0)];
-    char center_g = source[get_pos(center_x, center_y, width, 1)];
-    char center_r = source[get_pos(center_x, center_y, width, 2)];
+    uchar center_b = source[get_pos(center_x, center_y, width, 0)];
+    uchar center_g = source[get_pos(center_x, center_y, width, 1)];
+    uchar center_r = source[get_pos(center_x, center_y, width, 2)];
 
     long delta = 0;
 
     int calculated_pixels = 0;
-    int total_brightness = 0;
+    long total_brightness = 0;
     for (int x = center_x - radius; x < center_x + radius + 1; x++) {
         for (int y = center_y - radius; y < center_y + radius + 1; y++) {
             if (x < 0 || y < 0 || x > width || y > height) {
@@ -48,47 +48,41 @@ kernel void getFlakeySharpnesses(__global char *source,
 
             delta += (int)d;
             calculated_pixels++;
+            
         }
     }
-
-    double sharpness = (double)(delta) / (double)(calculated_pixels * 3 * 255);
-
-    double brightness_percentage = (double)(total_brightness) / (double)(calculated_pixels * 3 * 255);
-    double denominator_coefficient = 1000000 * radius * radius;
-    double sharpness_coefficient = 1 / (denominator_coefficient * (brightness_percentage + 1 / (denominator_coefficient)));
     
+    
+    double sharpness = (double)(delta) / (double)((int)calculated_pixels * 3 * 255);
+    int calculated_pixels_times3 = calculated_pixels * 3 * 255;
+    double brightness_percentage = (double)total_brightness / (double)calculated_pixels_times3;
+    // double denominator_coefficient = 1000000 * radius * radius;
+    // double sharpness_coefficient = 1 / (denominator_coefficient * (brightness_percentage + 1 / (denominator_coefficient)));
+    double sharpness_coefficient = -pow(brightness_percentage, .1) + 1;
+    if (thrd_i == 35) {
+        printf("calculated_pixels: %d\n", calculated_pixels);
+        printf("calculated_pixels_times3: %d\n", calculated_pixels_times3);
+        printf("total_brightness: %ld\n", total_brightness);
+        printf("brightness_percentage: %f\n", brightness_percentage);
+        printf("sharpness before: %f\n", sharpness);
+        printf("sharpness_coefficient: %f\n", sharpness_coefficient);
+    }
     sharpness = sharpness * sharpness_coefficient;
+    if (thrd_i == 35) {
+        printf("sharpness after: %f\n", sharpness);
+        printf("-------------------\n");
+    }
     if (sharpness > flakey_sharpnesses[thrd_i]) {
         flakey_sharpnesses[thrd_i] = sharpness;
         pixel_origins[thrd_i] = source_index;
     }
 }
 
-// kernel void chooseOriginPixelBySharpnesses(__global double *all_sharpnesses,
-//                                             __global char* pixel_origins,
-//                                             int pixels_per_image,
-//                                             int image_count) {
-//     const int thrd_i = get_global_id(0);
 
-//     if (thrd_i > pixels_per_image) {
-//         return;
-//     }
-
-//     double max_sharpness = 0;
-//     int max_sharpness_index = 0;
-//     for (int i = 0; i < image_count; i++) {
-//         if (all_sharpnesses[i * pixels_per_image + thrd_i] > max_sharpness) {
-//             max_sharpness = all_sharpnesses[i * pixels_per_image + thrd_i];
-//             max_sharpness_index = i;
-//         }
-//     }
-//     pixel_origins[thrd_i] = max_sharpness_index;
-// }
-
-kernel void pullPixelsByOriginImage(__global char *source,
-                                    __global char *destination,
-                                    __global char *pixel_origins,
-                                    int width, int height, char source_index) {
+kernel void pullPixelsByOriginImage(__global uchar *source,
+                                    __global uchar *destination,
+                                    __global uchar *pixel_origins,
+                                    int width, int height, uchar source_index) {
     const int thrd_i = get_global_id(0);
 
     if (thrd_i > width * height) {

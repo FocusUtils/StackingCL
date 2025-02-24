@@ -1,1 +1,5 @@
 tkinter/src/imagecache
+main.exe
+main.spec
+build/
+dist/

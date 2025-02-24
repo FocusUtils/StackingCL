@@ -195,7 +195,8 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
     start_calculating_sharpnesses = time.time_ns()
     start_sharpness_and_origin_time = time.time_ns()
     for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
-        bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
+        rgb = lazyimage.rgb
+        bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
         lazyimage.cache()
         source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
         del bgr_flattened
@@ -372,7 +373,6 @@ if __name__ == '__main__':
         rgb_values = mp.Pool(min(MAX_CORES_FOR_MP, len(image_paths))).imap(load_image, image_paths)
         start_image_load_time = time.time_ns()
         for idx, (name, rgb) in enumerate(zip(image_paths, rgb_values)):
-
             img = Image.fromarray(cv2.resize(rgb, (int(rgb.shape[1]//5), int(rgb.shape[0]//5))))
             add_image_to_scrollbar(img, os.path.basename(name))
 
@@ -675,10 +675,11 @@ if __name__ == '__main__':
         sharpness_panel.update_image(sharpness_img)
     
     ## sharpness brightness slider
-    sharpness_brightness_string_var = customtkinter.StringVar(value="Sharpness brightness: 1")
+    sharpness_brightness_string_var = customtkinter.StringVar(value="Sharpness brightness: 1.00e0")
     sharpness_brightness_label = customtkinter.CTkLabel(settings_frame, textvariable=sharpness_brightness_string_var)
     sharpness_brightness_label.grid(pady=5, row=8, column=0, sticky="nw")
     sharpness_brightness_slider = CustomSlider(settings_frame, from_=0, to=200)
+    sharpness_brightness_slider.set(0)
     sharpness_brightness_slider.grid(pady=5, row=9, column=0, sticky="nw")
     sharpness_brightness_slider.on_event_or_scroll("<ButtonRelease-1>", on_sharpness_brightness_slider_change)
     sharpness_brightness_slider.on_value_update(on_sharpness_brightness_slider_value_update)
@@ -760,11 +761,12 @@ if __name__ == '__main__':
                                 f"Exported sharpness map:       {exported_shrp}\n",
                                 f"Exported changes map:         {exported_chng}\n\n",
 
-                                f"Min sharpness:                {np.amin(sharpnesses_gpu):.5f} / 1\n",
-                                f"Max sharpness:                {np.amax(sharpnesses_gpu):.5f} / 1\n",
+                                f"Min sharpness:                {np.amin(sharpnesses_gpu):.15f} / 1\n",
+                                f"Max sharpness:                {np.amax(sharpnesses_gpu):.15f} / 1\n",
 
-                                f"Average sharpness:            {np.average(sharpnesses_gpu):.5f} / 1\n",
-                                f"Median sharpness:             {np.median(sharpnesses_gpu):.5f} / 1\n\n",
+                                f"Average sharpness:            {np.average(sharpnesses_gpu):.15f} / 1\n",
+                                f"Median sharpness:             {np.median(sharpnesses_gpu):.15f} / 1\n",
+                                f"Mean sharpness:               {np.mean(sharpnesses_gpu):.15f} / 1\n\n",
                             ]
             
             pxl_nums = []

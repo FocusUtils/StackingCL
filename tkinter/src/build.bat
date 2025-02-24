@@ -1,1 +1,3 @@
-python C:\python310\lib\site-packages\PyInstaller\__main__.py --onefile main.py
+
+cd %~dp0
+pyinstaller --onefile main.py --distpath .
