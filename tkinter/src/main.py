@@ -369,7 +369,8 @@ if __name__ == '__main__':
             
             image_paths.append(f.name)
 
-        
+        if len(image_paths) == 0:
+            return
         rgb_values = mp.Pool(min(MAX_CORES_FOR_MP, len(image_paths))).imap(load_image, image_paths)
         start_image_load_time = time.time_ns()
         for idx, (name, rgb) in enumerate(zip(image_paths, rgb_values)):
@@ -873,6 +874,6 @@ if __name__ == '__main__':
 
     manager = mp.Manager()
     message_queue = manager.Queue()
-    Thread(target=update_progress_bar_worker, args=(message_queue,)).start()
+    Thread(target=update_progress_bar_worker, args=(message_queue,), daemon=True).start()
 
     root.mainloop()

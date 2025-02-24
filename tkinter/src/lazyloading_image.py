@@ -4,6 +4,7 @@ import time
 import os
 import atexit
 import gc
+import weakref
 
 
 class LazyImage:
@@ -16,7 +17,8 @@ class LazyImage:
         self.cacheindex = LazyImage.cacheindex
         LazyImage.cacheindex += 1
         self.cachepath = get_path() / "imagecache" / f"cached_image_{self.cacheindex}.pkl"
-        LazyImage.lazy_images.append(self)
+        self.own_weakref = weakref.ref(self)
+        LazyImage.lazy_images.append(self.own_weakref)
         self.last_access = time.time()
         self.unload_block = False
 
@@ -56,22 +58,28 @@ class LazyImage:
         return self._rgb
     
     def __del__(self):
-        LazyImage.lazy_images.remove(self)
+        LazyImage.lazy_images.remove(self.own_weakref)
         ## delete the cache file if present
         if self.cachepath.exists():
             os.remove(self.cachepath)
 
 
-def unload_caller():
+def unload_caller(): ## TODO: one image is always retained for some reason. If you delete all images, the last one that you clicked "remove image" on will be retained. As soon as new images are loaded, the previously, falsly retained gets recycled, so no real memory leak, but something to consider fixing
     while True:
-        for img in LazyImage.lazy_images:
+        for img_weakref in LazyImage.lazy_images:
+            img = img_weakref()
+            if img is None:
+                continue
             if time.time() - img.last_access > 1:
                 img.cache()
         time.sleep(1)
 
 
 def remove_all_cache():
-    for img in LazyImage.lazy_images:
+    for img_weakref in LazyImage.lazy_images:
+        img = img_weakref()
+        if img is None:
+            continue
         if img.cachepath.exists():
             os.remove(img.cachepath)
 
