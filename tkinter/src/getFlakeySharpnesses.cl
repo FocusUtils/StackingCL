@@ -28,7 +28,7 @@ kernel void getFlakeySharpnesses(__global uchar *source,
     long total_brightness = 0;
     for (int x = center_x - radius; x < center_x + radius + 1; x++) {
         for (int y = center_y - radius; y < center_y + radius + 1; y++) {
-            if (x < 0 || y < 0 || x > width || y > height) {
+            if (x < 0 || y < 0 || x >= width || y >= height) {
                 continue;
             }
 
@@ -45,6 +45,7 @@ kernel void getFlakeySharpnesses(__global uchar *source,
                         abs(abs(center_g) - g) +
                         abs(abs(center_r) - r));
             total_brightness += b + g + r;
+            
 
             delta += (int)d;
             calculated_pixels++;
@@ -54,24 +55,12 @@ kernel void getFlakeySharpnesses(__global uchar *source,
     
     
     double sharpness = (double)(delta) / (double)((int)calculated_pixels * 3 * 255);
-    int calculated_pixels_times3 = calculated_pixels * 3 * 255;
-    double brightness_percentage = (double)total_brightness / (double)calculated_pixels_times3;
-    // double denominator_coefficient = 1000000 * radius * radius;
-    // double sharpness_coefficient = 1 / (denominator_coefficient * (brightness_percentage + 1 / (denominator_coefficient)));
-    double sharpness_coefficient = -pow(brightness_percentage, .1) + 1;
-    if (thrd_i == 35) {
-        printf("calculated_pixels: %d\n", calculated_pixels);
-        printf("calculated_pixels_times3: %d\n", calculated_pixels_times3);
-        printf("total_brightness: %ld\n", total_brightness);
-        printf("brightness_percentage: %f\n", brightness_percentage);
-        printf("sharpness before: %f\n", sharpness);
-        printf("sharpness_coefficient: %f\n", sharpness_coefficient);
-    }
+    int max_possible_brightness = calculated_pixels * 3 * 255;
+    double brightness_normalized = (double)total_brightness / (double)max_possible_brightness;
+    double sharpness_coefficient = -pow(brightness_normalized, .1) + 1;
+    
     sharpness = sharpness * sharpness_coefficient;
-    if (thrd_i == 35) {
-        printf("sharpness after: %f\n", sharpness);
-        printf("-------------------\n");
-    }
+    
     if (sharpness > flakey_sharpnesses[thrd_i]) {
         flakey_sharpnesses[thrd_i] = sharpness;
         pixel_origins[thrd_i] = source_index;
