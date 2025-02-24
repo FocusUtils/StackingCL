@@ -22,8 +22,56 @@ import traceback
 import colorama
 from sbNative.debugtools import log, ilog
 import math
+import json
 if __name__ == "__main__":
     from lazyloading_image import LazyImage
+
+class CustomSlider(customtkinter.CTkSlider):
+    def __init__(self, master=None, **kwargs):
+        super().__init__(master, **kwargs)
+        self.bind("<Enter>", self._enable_scroll)
+        self.bind("<Leave>", self._disable_scroll)
+        self.bind("<MouseWheel>", self._on_scroll)
+        self._scroll_enabled = False
+        self.on_scroll_events = set()
+        self.on_value_update_events = set()
+    
+    def _enable_scroll(self, event):
+        self._scroll_enabled = True
+    
+    def _disable_scroll(self, event):
+        self._scroll_enabled = False
+    
+    def _on_scroll(self, event):
+        if self._scroll_enabled:
+            delta = 1 if event.delta > 0 else -1
+            new_value = self.get() + delta
+            self.set(min(max(new_value, self.cget("from_")), self.cget("to")))
+            for callback in self.on_scroll_events:
+                callback(self.get())
+            
+    def on_event_or_scroll(self, event, callback):
+        self.bind(event, callback)
+        self.on_scroll_events.add(callback)
+        
+    def on_value_update(self, callback):
+        self.on_value_update_events.add(callback)
+        
+    def set(self, value):
+        super().set(value)
+        for callback in self.on_value_update_events:
+            callback(value)
+
+
+MULTIPLIER_GROW_BASE = 1.2
+def normalize_sharpnesses(sharpness_gpu_original, width, height, multiplier=None):
+    if multiplier is None:
+        mean = np.mean(sharpness_gpu_original)
+        multiplier = 127/mean
+    sharpness_gpu = sharpness_gpu_original * multiplier
+    sharpness_gpu[sharpness_gpu > 255] = 255
+    return sharpness_gpu, multiplier
+    
 
 
 class ProgressBarMessage:
@@ -59,6 +107,10 @@ FILE_EXTENTIONS = {
     ],
 }
 
+def get_colortone(t):
+    #       B                   G                   R
+    return [255 * (1 - t),      80 * (t),    255 * t]
+
 
 BLUE2ORANGE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
 ORANGE2BLUE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
@@ -67,8 +119,8 @@ for i in range(256):
     
     t = i / 255.0  # Normalize
     t = 0.2 * math.tan(2.3 * (t - 0.5)) + 0.5
-    BLUE2ORANGE_LUT[i, 0] = [255 * (1 - t), 100 * (1 - t/3), 255 * t]  # [B, G, R]
-    ORANGE2BLUE_LUT[i, 0] = [255 * t, 100 * (1 - t/3), 255 * (1 - t)]  # [B, G, R]
+    BLUE2ORANGE_LUT[i, 0] = get_colortone(t)
+    ORANGE2BLUE_LUT[i, 0] = get_colortone(1 - t)
 
 
 def apply_lut_to_gray(gray, inverted=False):
@@ -351,6 +403,7 @@ if __name__ == '__main__':
     global changes_arr
     global rendering_time
     global loading_time
+    
 
     output_panel = None
     output_panel_packed = False
@@ -481,10 +534,14 @@ if __name__ == '__main__':
         output_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_output_checkbox()
         
-        sharpness_gray_normalized = (sharpnesses_gpu * (127/np.percentile(sharpnesses_gpu, 75))).astype(np.uint8)
-        sharpness_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(sharpness_gray_normalized, width, height))
-
+        
+        brightnessed, multiplier = normalize_sharpnesses(sharpnesses_gpu, width, height)
+        sharpness_brightness_slider.set(math.log(multiplier, MULTIPLIER_GROW_BASE))
+        
+        sharpness_img = convert_gray_arr_to_image(brightnessed, width, height)
+        
         sharpness_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = sharpness_img)
+        
         sharpness_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_sharpness_checkbox()
 
@@ -601,6 +658,32 @@ if __name__ == '__main__':
     image_position_info = customtkinter.CTkLabel(settings_frame, textvariable=image_position_info_strvar)
     image_position_info.grid(pady=5, row=6, column=0, sticky="nw")
     
+    def on_sharpness_brightness_slider_value_update(value):
+        multiplier = MULTIPLIER_GROW_BASE**sharpness_brightness_slider.get()
+        order_of_magnitude = int(math.log(multiplier, 10))
+        multiplier_scientific = f"{multiplier/10**order_of_magnitude:.2f}e{order_of_magnitude}"
+        sharpness_brightness_string_var.set(f"Sharpness brightness: {multiplier_scientific}")
+    
+    def on_sharpness_brightness_slider_change(*_):
+        global sharpness_img
+        global sharpnesses_gpu
+        multiplier = MULTIPLIER_GROW_BASE**sharpness_brightness_slider.get()
+        if sharpnesses_gpu is None:
+            return
+        brightnessed, _ = normalize_sharpnesses(sharpnesses_gpu, sharpness_img.shape[1], sharpness_img.shape[0], multiplier)
+        sharpness_img = convert_gray_arr_to_image(brightnessed, sharpness_img.shape[1], sharpness_img.shape[0])
+        sharpness_panel.update_image(sharpness_img)
+    
+    ## sharpness brightness slider
+    sharpness_brightness_string_var = customtkinter.StringVar(value="Sharpness brightness: 1")
+    sharpness_brightness_label = customtkinter.CTkLabel(settings_frame, textvariable=sharpness_brightness_string_var)
+    sharpness_brightness_label.grid(pady=5, row=8, column=0, sticky="nw")
+    sharpness_brightness_slider = CustomSlider(settings_frame, from_=0, to=200)
+    sharpness_brightness_slider.grid(pady=5, row=9, column=0, sticky="nw")
+    sharpness_brightness_slider.on_event_or_scroll("<ButtonRelease-1>", on_sharpness_brightness_slider_change)
+    sharpness_brightness_slider.on_value_update(on_sharpness_brightness_slider_value_update)
+    
+    
     def update_img_pos_info_strvar(x, y):
         image_position_info_strvar.set(f"Mouse Position: ({x}, {y})")
 
@@ -608,13 +691,14 @@ if __name__ == '__main__':
     def on_radius_slider(event):
         global radius
         global radius_string_var
-        radius = int(event)
+        radius = int(radius_slider.get())
         radius_string_var.set(f"Radius: {radius}")
 
     radius_string_var = customtkinter.StringVar(value="Radius: 1")
     radius_label = customtkinter.CTkLabel(settings_frame, textvariable=radius_string_var)
     radius_label.grid(pady=0, row=0, column=0, sticky="s")
-    radius_slider = customtkinter.CTkSlider(settings_frame, from_=1, to=100, command=on_radius_slider)
+    radius_slider = CustomSlider(settings_frame, from_=1, to=60)
+    radius_slider.on_event_or_scroll("<ButtonRelease-1>", on_radius_slider)
     radius_slider.set(1)
     radius_slider.grid(pady=5, row=1, column=0, sticky="nw")
 
@@ -753,8 +837,6 @@ if __name__ == '__main__':
                 message = message_queue.get_nowait()
                 if message.estimated_time_remaining != -1:
                     target_finish_time = message.estimated_time_remaining + time.time()
-                    print("target_finish_time", target_finish_time)
-                    print("shown_finish_time", shown_finish_time)
                     if shown_finish_time == -1:
                         shown_finish_time = target_finish_time
             except:

@@ -23,6 +23,9 @@ class LazyImage:
     def cache(self):
         if self.unload_block or not self.loaded:return
         
+        if not self.cachepath.parent.exists():
+            self.cachepath.parent.mkdir(parents=True)
+        
         with open(str(self.cachepath), "wb") as f:
             f.write(pickle.dumps(self._rgb))
         self.loaded = False

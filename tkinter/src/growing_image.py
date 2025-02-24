@@ -144,3 +144,10 @@ class GrowingImage(CTk.CTkCanvas):
             anchor="center",
             image = self.image
         )
+        
+    def update_image(self, image):
+        self.src_img = image
+        self.pil_img = Image.fromarray(image)
+        self.src_aspect_ratio = self.src_img.shape[0] / self.src_img.shape[1]
+        self._redraw_image()
+        self.update()
