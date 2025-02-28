@@ -190,15 +190,18 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
     image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
 
     mf = cl.mem_flags
-    sharpnesses_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
-    image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+    READ_WRITE = mf.READ_WRITE
+    WRITE_ONLY = mf.WRITE_ONLY
+    READ_ONLY = mf.READ_ONLY
+    sharpnesses_buf = cl.Buffer(ctx, READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
+    image_origin_buf = cl.Buffer(ctx, WRITE_ONLY | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
     start_calculating_sharpnesses = time.time_ns()
     start_sharpness_and_origin_time = time.time_ns()
     for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
         rgb = lazyimage.rgb
         bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
         lazyimage.cache()
-        source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
+        source_buf = cl.Buffer(ctx, READ_ONLY | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
         del bgr_flattened
         try:
 
@@ -259,13 +262,13 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
         start_pull_pixels_time = time.time_ns()
         image_origin_gpu = image_origin_reshaped.reshape(-1)
         del image_origin_reshaped
-        image_origin_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+        image_origin_buf = cl.Buffer(ctx, READ_WRITE | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
 
         
         for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
             bgr_flattened = cv2.cvtColor(lazyimage.rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
             lazyimage.cache()
-            source_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
+            source_buf = cl.Buffer(ctx, READ_ONLY | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
             program.pullPixelsByOriginImage.set_scalar_arg_dtypes([
                 None,
                 None,

@@ -25,7 +25,7 @@ kernel void getFlakeySharpnesses(__global uchar *source,
     long delta = 0;
 
     int calculated_pixels = 0;
-    long total_brightness = 0;
+    
     for (int x = center_x - radius; x < center_x + radius + 1; x++) {
         for (int y = center_y - radius; y < center_y + radius + 1; y++) {
             if (x < 0 || y < 0 || x >= width || y >= height) {
@@ -44,7 +44,6 @@ kernel void getFlakeySharpnesses(__global uchar *source,
                 (float)(abs(abs(center_b) - b) +
                         abs(abs(center_g) - g) +
                         abs(abs(center_r) - r));
-            total_brightness += b + g + r;
             
 
             delta += (int)d;
@@ -55,8 +54,6 @@ kernel void getFlakeySharpnesses(__global uchar *source,
     
     
     double sharpness = (double)(delta) / (double)((int)calculated_pixels * 3 * 255);
-    int max_possible_brightness = calculated_pixels * 3 * 255;
-    // double brightness_normalized = (double)total_brightness / (double)max_possible_brightness;
     double brightness_normalized = (double)(center_b + center_g + center_r) / (double)(3 * 255);
     double sharpness_coefficient = -pow(brightness_normalized, .1) + 1;
     
