@@ -55,7 +55,7 @@ kernel void getFlakeySharpnesses(__global uchar *source,
     
     double sharpness = (double)(delta) / (double)((int)calculated_pixels * 3 * 255);
     double brightness_normalized = (double)(center_b + center_g + center_r) / (double)(3 * 255);
-    double sharpness_coefficient = -pow(brightness_normalized, .1) + 1;
+    double sharpness_coefficient = -pow(brightness_normalized, 40) + 1;
     
     sharpness = sharpness * sharpness_coefficient;
     

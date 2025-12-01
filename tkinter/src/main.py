@@ -112,6 +112,10 @@ def get_colortone(t):
     return [255 * (1 - t),      80 * (t),    255 * t]
 
 
+global image_origin_from_gpu_cache
+image_origin_from_gpu_cache = None
+
+
 BLUE2ORANGE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
 ORANGE2BLUE_LUT = np.zeros((256, 1, 3), dtype=np.uint8)
 for i in range(256):
@@ -136,7 +140,7 @@ def load_image(name):
 
     if rgb.shape[0] > rgb.shape[1]:
         
-        rgb = cv2.rotate(rgb, cv2.ROTATE_90_CLOCKWISE)
+        rgb = cv2.rotate(rgb, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
     ## denoising
@@ -177,6 +181,9 @@ def initialize_gpu_and_compile(device: cl.Device):
 
 
 def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue):
+    global image_origin_from_gpu_cache
+    important_params_for_image_origin_gpu_calculation = (radius, list(image_arr_dict.keys()))    
+    
     img1 = list(image_arr_dict.values())[0].rgb
 
     def get_estimated_pulling_time(calculating_sharpnesses_time):
@@ -186,69 +193,75 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
     height = int(img1.shape[0])
     total_pixels = width*height
 
-    sharpness_gpu = np.zeros((total_pixels), dtype=np.float64)
-    image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
-
     mf = cl.mem_flags
     READ_WRITE = mf.READ_WRITE
     WRITE_ONLY = mf.WRITE_ONLY
     READ_ONLY = mf.READ_ONLY
-    sharpnesses_buf = cl.Buffer(ctx, READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
-    image_origin_buf = cl.Buffer(ctx, WRITE_ONLY | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
-    start_calculating_sharpnesses = time.time_ns()
-    start_sharpness_and_origin_time = time.time_ns()
-    for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
-        rgb = lazyimage.rgb
-        bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
-        lazyimage.cache()
-        source_buf = cl.Buffer(ctx, READ_ONLY | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
-        del bgr_flattened
-        try:
 
-            # Execute the kernel
-            program.getFlakeySharpnesses.set_scalar_arg_dtypes(
-                [
-                    None,
-                    None,
-                    None,
-                    np.int8,
-                    np.int32,
-                    np.int32,
-                    np.int32,
-                ])
+    if image_origin_from_gpu_cache is None or image_origin_from_gpu_cache[0] != important_params_for_image_origin_gpu_calculation:
+        sharpness_gpu = np.zeros((total_pixels), dtype=np.float64)
+        image_origin_gpu = np.zeros((total_pixels), dtype=np.uint8)
+        sharpnesses_buf = cl.Buffer(ctx, READ_WRITE | mf.COPY_HOST_PTR, hostbuf=sharpness_gpu)
+        image_origin_buf = cl.Buffer(ctx, WRITE_ONLY | mf.COPY_HOST_PTR, hostbuf=image_origin_gpu)
+
+        start_calculating_sharpnesses = time.time_ns()
+        start_sharpness_and_origin_time = time.time_ns()
+        
+        for i, (name, lazyimage) in enumerate(image_arr_dict.items()):
+            rgb = lazyimage.rgb
+            bgr_flattened = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR).flatten(order="K")
+            lazyimage.cache()
+            source_buf = cl.Buffer(ctx, READ_ONLY | mf.COPY_HOST_PTR, hostbuf=bgr_flattened)
+            del bgr_flattened
+            try:
+
+                # Execute the kernel
+                program.getFlakeySharpnesses.set_scalar_arg_dtypes(
+                    [
+                        None,
+                        None,
+                        None,
+                        np.int8,
+                        np.int32,
+                        np.int32,
+                        np.int32,
+                    ])
+                
+                program.getFlakeySharpnesses(
+                    queue, (total_pixels,), None,
+                    source_buf, sharpnesses_buf, image_origin_buf, np.int8(i), np.int32(width), np.int32(height), np.int32(radius)
+                )
+
+
+                # Wait for the operation to complete
+                queue.finish()
+
+                # Retrieve results from the GPU
+                cl.enqueue_copy(queue, sharpness_gpu, sharpnesses_buf)
+                cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
+            except:
+                raise
             
-            program.getFlakeySharpnesses(
-                queue, (total_pixels,), None,
-                source_buf, sharpnesses_buf, image_origin_buf, np.int8(i), np.int32(width), np.int32(height), np.int32(radius)
-            )
-
-
-            # Wait for the operation to complete
-            queue.finish()
-
-            # Retrieve results from the GPU
-            cl.enqueue_copy(queue, sharpness_gpu, sharpnesses_buf)
-            cl.enqueue_copy(queue, image_origin_gpu, image_origin_buf)
-        except:
-            raise
-        
-        sharpness_and_origin_time_until_now = (time.time_ns() - start_sharpness_and_origin_time) / (10 ** 9)
-        calculating_sharpnesses_time = (sharpness_and_origin_time_until_now/(i + 1)) * len(image_arr_dict)
-        eta = get_estimated_pulling_time(calculating_sharpnesses_time) + calculating_sharpnesses_time - sharpness_and_origin_time_until_now
-        message_queue.put(ProgressBarMessage("Calculating sharpnesses:", f"Image {name}", i, 2*len(image_arr_dict)+1, eta))
-        
-        
-    calculating_sharpnesses_time = (time.time_ns() - start_calculating_sharpnesses) / (10 ** 9)
+            sharpness_and_origin_time_until_now = (time.time_ns() - start_sharpness_and_origin_time) / (10 ** 9)
+            calculating_sharpnesses_time = (sharpness_and_origin_time_until_now/(i + 1)) * len(image_arr_dict)
+            eta = get_estimated_pulling_time(calculating_sharpnesses_time) + calculating_sharpnesses_time - sharpness_and_origin_time_until_now
+            message_queue.put(ProgressBarMessage("Calculating sharpnesses:", f"Image {name}", i, 2*len(image_arr_dict)+1, eta))
+            
+            
+        image_origin_reshaped = image_origin_gpu.reshape((width, height))
+        image_origin_from_gpu_cache = (important_params_for_image_origin_gpu_calculation, image_origin_reshaped.copy())
+        calculating_sharpnesses_time = (time.time_ns() - start_calculating_sharpnesses) / (10 ** 9)
+    else:
+        eta = -1
+        image_origin_reshaped = image_origin_from_gpu_cache[1]
+        sharpness_gpu = None
     
 
     try:
         # This is where the fun begins, the manipulation of the origin map, which decides which pixel to take from which image
         #
         message_queue.put(ProgressBarMessage("Manipulating origin map:", "", len(image_arr_dict), 2*len(image_arr_dict)+1, eta))
-        image_origin_reshaped = image_origin_gpu.reshape((width, height))
         
-        composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
-        destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
         try:
             g = globals()
             l = locals()
@@ -258,6 +271,10 @@ def render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program,
             print(colorama.Fore.RED + "Error in the origin manipulation code:")
             print(traceback.format_exc())
             print(colorama.Fore.RESET)
+        
+        
+        composite_image_gpu = np.zeros((total_pixels * 3), dtype=np.uint8)
+        destination_buf = cl.Buffer(ctx, mf.READ_WRITE | mf.COPY_HOST_PTR, hostbuf=composite_image_gpu)
         
         start_pull_pixels_time = time.time_ns()
         image_origin_gpu = image_origin_reshaped.reshape(-1)
@@ -515,8 +532,9 @@ if __name__ == '__main__':
         global rendering_time
         
         render_time_start = time.time_ns()
-        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu = render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue)
-        
+        width, height, changes_arr, composite_image_gpu, sharpnesses_gpu_or_none = render(radius, image_arr_dict, ctx, image_origin_manipulation_code, program, queue, message_queue)
+        if sharpnesses_gpu_or_none is not None:
+            sharpnesses_gpu = sharpnesses_gpu_or_none
         
         rendering_time = (time.time_ns() - render_time_start) / (10 ** 9)
 
