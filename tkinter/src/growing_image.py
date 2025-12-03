@@ -97,15 +97,17 @@ class GrowingImage(CTk.CTkCanvas):
                 self.zoom_x_offset -= self.src_img.shape[1] * self.zoom_amount * ZOOM_FACTOR * img_mouse_x_portion
                 self.zoom_y_offset -= self.src_img.shape[0] * self.zoom_amount * ZOOM_FACTOR * img_mouse_y_portion
             
-            if self.zoom_amount >= 1:
-                self.zoom_x_offset = 0
-                self.zoom_y_offset = 0
-            
+            self.zoom_x_offset = max(0, min(self.zoom_x_offset, self.src_img.shape[1] - self.src_img.shape[1] * self.zoom_amount))
+            self.zoom_y_offset = max(0, min(self.zoom_y_offset, self.src_img.shape[0] - self.src_img.shape[0] * self.zoom_amount))
+
             if prev_zoom_amount!= self.zoom_amount:
                 self._redraw_image()
                 for callback in self.zoom_event_callbacks:
                     callback(self)
-    
+        
+
+
+
     def redraw_image(self):
         self._redraw_image()
 

@@ -546,7 +546,9 @@ if __name__ == '__main__':
         rendered_images_frame.grid(row=1, column=0, columnspan=3, sticky="nesw")
         
 
-        changes_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(changes_arr * int(255 / len(image_arr_dict)), width, height), inverted=True)
+        # changes_img = apply_lut_to_gray(convert_gray_arr_to_gray_image(changes_arr * int(255 / len(image_arr_dict)), width, height), inverted=True)
+        changes_img = convert_gray_arr_to_image(changes_arr * int(255 / len(image_arr_dict)), width, height)
+
         changes_panel = PreviewImage(rendered_images_frame, update_img_pos_info_strvar, image = changes_img)
         changes_panel.add_zoom_event_callback(zoom_event_callback)
         on_show_changes_checkbox()
